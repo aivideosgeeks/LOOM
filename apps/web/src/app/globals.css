@@ -46,10 +46,11 @@
   --lift-hover: 0 1px 2px oklch(0.19 0.019 255 / 0.06), 0 20px 46px -24px oklch(0.19 0.019 255 / 0.45);
 
   /* Background weave, tuned per theme so it never turns to noise */
-  --weave-alpha: 0.032;
+  --weave-alpha: 0.055;
   --weave-pitch: 46px;
-  --bloom-a: 0.05;
-  --bloom-b: 0.035;
+  --bloom-a: 0.10;
+  --bloom-b: 0.075;
+  --bloom-c: 0.055;
   --grain: 0.016;
 
   --background: var(--ground);
@@ -106,9 +107,10 @@
     --lift: 0 1px 2px oklch(0 0 0 / 0.5), 0 12px 34px -22px oklch(0 0 0 / 0.95);
     --lift-hover: 0 1px 2px oklch(0 0 0 / 0.6), 0 24px 52px -24px oklch(0 0 0 / 1);
 
-    --weave-alpha: 0.055;
-    --bloom-a: 0.14;
-    --bloom-b: 0.1;
+    --weave-alpha: 0.17;
+    --bloom-a: 0.30;
+    --bloom-b: 0.24;
+    --bloom-c: 0.16;
     --grain: 0.022;
 
     --primary-foreground: oklch(0.14 0.01 262);
@@ -142,9 +144,10 @@
   --lift: 0 1px 2px oklch(0 0 0 / 0.5), 0 12px 34px -22px oklch(0 0 0 / 0.95);
   --lift-hover: 0 1px 2px oklch(0 0 0 / 0.6), 0 24px 52px -24px oklch(0 0 0 / 1);
 
-  --weave-alpha: 0.055;
-  --bloom-a: 0.14;
-  --bloom-b: 0.1;
+  --weave-alpha: 0.17;
+  --bloom-a: 0.30;
+  --bloom-b: 0.24;
+  --bloom-c: 0.16;
   --grain: 0.022;
 
   --primary-foreground: oklch(0.14 0.01 262);
@@ -247,7 +250,7 @@
         color-mix(in oklab, var(--ink-3) calc(var(--weave-alpha) * 70%), transparent) 0 1px,
         transparent 1px var(--weave-pitch)
       );
-    mask-image: radial-gradient(ellipse 120% 90% at 50% 0%, #000 30%, transparent 100%);
+    mask-image: linear-gradient(180deg, rgb(0 0 0 / 1) 0%, rgb(0 0 0 / 0.9) 45%, rgb(0 0 0 / 0.55) 100%);
   }
 
   /*
@@ -262,14 +265,19 @@
     pointer-events: none;
     background-image:
       radial-gradient(
-        38% 30% at 18% 8%,
+        34% 27% at 30% 27%,
         color-mix(in oklab, var(--signal) calc(var(--bloom-a) * 100%), transparent),
         transparent 70%
       ),
       radial-gradient(
-        34% 28% at 88% 22%,
+        30% 25% at 73% 33%,
         color-mix(in oklab, var(--weft) calc(var(--bloom-b) * 100%), transparent),
         transparent 70%
+      ),
+      radial-gradient(
+        32% 26% at 56% 76%,
+        color-mix(in oklab, var(--signal) calc(var(--bloom-c) * 100%), transparent),
+        transparent 72%
       );
     animation: drift 44s ease-in-out infinite alternate;
     will-change: transform;
