@@ -1,0 +1,70 @@
+# Render blueprint for the LOOM API.
+#
+# The API needs a long-running Node process: it owns the background job queue that
+# scores deals, classifies sentiment and summarises transcripts off the request path,
+# and it loads a small embedding model into memory for semantic search. That is why it
+# lives here rather than on Vercel, which runs functions that end when the response does.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> point at this repository.
+
+services:
+  - type: web
+    name: loom-api
+    runtime: node
+    plan: free
+    region: oregon
+    # The workspace root installs all packages; the API is started from its own directory.
+    buildCommand: npm ci
+    startCommand: npm run start -w @loom/api
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Where the browser reaches the app. Used for CORS and for invitation links,
+      # so it must be the Vercel URL, with no trailing slash.
+      - key: WEB_ORIGIN
+        sync: false
+
+      # MongoDB Atlas connection string. Without it the API starts an in-memory
+      # database that is wiped on every restart, which is not what you want in production.
+      - key: MONGODB_URI
+        sync: false
+
+      # Sign the session cookie. Generate once: openssl rand -base64 48
+      - key: JWT_SECRET
+        generateValue: true
+
+      # The app is served over HTTPS, so the cookie must be marked secure.
+      - key: COOKIE_SECURE
+        value: "true"
+
+      # Do not create the demo team on a real deployment. With this false and an
+      # empty database, the app shows its one-time setup screen instead.
+      - key: SEED_ON_START
+        value: "false"
+
+      # Language model. Set one of these; with none set every AI feature falls back.
+      - key: AI_PROVIDER
+        value: auto
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+      # Embeddings power semantic search. "local" runs a small model in this process,
+      # which fits the free plan but adds to cold starts. Switch to voyage or openai
+      # if memory gets tight, or "none" to fall back to keyword search.
+      - key: EMBEDDINGS_PROVIDER
+        value: local
+      - key: VOYAGE_API_KEY
+        sync: false
+
+      # Optional. Without it invitations still work: the link is shown in the app.
+      - key: SMTP_URL
+        sync: false
+      - key: SMTP_FROM
+        value: loom@example.com

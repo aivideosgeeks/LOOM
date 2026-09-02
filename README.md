@@ -169,3 +169,12 @@ user handbook with a screenshot of every screen and control.
 ## Environment
 
 See [`.env.example`](.env.example) for every variable with comments.
+
+## Deployment
+
+The web app deploys to Vercel and the API to Render, because the API needs a
+long-running process for its job queue and embedding model. Next.js rewrites
+`/api/*` to the API server-side, so there is one origin and the session cookie
+stays first-party. Full instructions, including MongoDB Atlas and every
+environment variable, are in [DEPLOY.md](DEPLOY.md); the API service itself is
+described by [`render.yaml`](render.yaml).
