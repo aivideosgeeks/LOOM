@@ -20,13 +20,18 @@ Browser ──▶ Vercel (Next.js) ──▶ Render (Express API) ──▶ Mong
 
 ## 1. Push to GitHub
 
+The repository already exists at `aivideosgeeks/LOOM`, it is public, and it is empty.
+The remote is already configured, so the push is one command:
+
 ```bash
-git remote add origin https://github.com/aivideosgeeks/LOOM.git
 git push -u origin main
 ```
 
-If the repository does not exist yet, create it first at
-[github.com/new](https://github.com/new) as `LOOM`, empty, with no README.
+**You will need to authenticate as `aivideosgeeks`.** The credential currently saved on
+this machine belongs to `asbaq000`, which can read that repository but not write to it,
+so the push is rejected before it starts. Either sign in as `aivideosgeeks` when the
+credential prompt appears, or add `asbaq000` as a collaborator under
+**Settings -> Collaborators** on the repository and push with the saved credential.
 
 ## 2. Create the database
 
@@ -74,6 +79,11 @@ Import the repository, then set:
 | Root directory | `apps/web` |
 | Framework | Next.js (detected) |
 | `API_URL` | Your Render URL, e.g. `https://loom-api-xxxx.onrender.com` |
+
+Leave **Include files outside of the root directory** switched on. It is on by default,
+and the build needs it: the web app imports the shared package from `packages/shared`,
+which sits outside `apps/web`. `apps/web/vercel.json` installs from the workspace root
+for the same reason.
 
 Deploy, then go back to Render and set `WEB_ORIGIN` to the Vercel URL. That variable is
 what invitation links are built from, so invitations point at the wrong host until it is set.
