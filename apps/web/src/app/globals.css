@@ -1,0 +1,469 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* =========================================================================
+   LOOM — the visual system.
+
+   A loom weaves separate threads into one fabric, which is what this CRM does
+   with notes, deals and signals. The background carries that literally: a faint
+   warp-and-weft weave under a slow drift of light, so no surface is ever a blank
+   field. Dark is jet black lifted a few points and shifted slightly blue, which
+   reads soft rather than dead.
+   ========================================================================= */
+
+:root {
+  --radius: 0.7rem;
+
+  /* Light: cool paper, so the weave reads as texture rather than dirt */
+  --ground: oklch(0.975 0.003 250);
+  --paper: oklch(1 0 0);
+  --sunk: oklch(0.955 0.005 250);
+  --ink: oklch(0.19 0.019 255);
+  --ink-2: oklch(0.47 0.017 252);
+  --ink-3: oklch(0.62 0.015 252);
+  --line: oklch(0.905 0.006 250);
+  --line-strong: oklch(0.85 0.009 250);
+
+  /* Signal: a deep petrol that stays clear of the semantic hues */
+  --signal: oklch(0.52 0.098 220);
+  --signal-hover: oklch(0.45 0.1 220);
+  --signal-wash: oklch(0.955 0.022 220);
+  --signal-line: oklch(0.86 0.046 220);
+
+  /* Weft: the second thread in the background wash */
+  --weft: oklch(0.55 0.13 292);
+
+  --good: oklch(0.53 0.122 156);
+  --good-wash: oklch(0.955 0.031 156);
+  --caution: oklch(0.58 0.111 75);
+  --caution-wash: oklch(0.962 0.038 80);
+  --bad: oklch(0.55 0.176 25);
+  --bad-wash: oklch(0.958 0.031 25);
+
+  --lift: 0 1px 2px oklch(0.19 0.019 255 / 0.05), 0 10px 30px -22px oklch(0.19 0.019 255 / 0.35);
+  --lift-hover: 0 1px 2px oklch(0.19 0.019 255 / 0.06), 0 20px 46px -24px oklch(0.19 0.019 255 / 0.45);
+
+  /* Background weave, tuned per theme so it never turns to noise */
+  --weave-alpha: 0.032;
+  --weave-pitch: 46px;
+  --bloom-a: 0.05;
+  --bloom-b: 0.035;
+  --grain: 0.016;
+
+  --background: var(--ground);
+  --foreground: var(--ink);
+  --card: var(--paper);
+  --card-foreground: var(--ink);
+  --popover: var(--paper);
+  --popover-foreground: var(--ink);
+  --primary: var(--signal);
+  --primary-foreground: oklch(0.99 0.002 250);
+  --secondary: var(--sunk);
+  --secondary-foreground: var(--ink);
+  --muted: var(--sunk);
+  --muted-foreground: var(--ink-2);
+  --accent: var(--signal-wash);
+  --accent-foreground: var(--signal-hover);
+  --destructive: var(--bad);
+  --border: var(--line);
+  --input: var(--line-strong);
+  --ring: var(--signal);
+
+  --chart-1: var(--signal);
+  --chart-2: var(--good);
+  --chart-3: var(--caution);
+  --chart-4: var(--bad);
+  --chart-5: var(--ink-3);
+}
+
+/* Jet black, lifted just enough to stay soft. Repeated for the stamp below. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.light):not([data-theme="light"]) {
+    --ground: oklch(0.128 0.007 262);
+    --paper: oklch(0.181 0.009 262);
+    --sunk: oklch(0.155 0.008 262);
+    --ink: oklch(0.965 0.004 250);
+    --ink-2: oklch(0.745 0.012 252);
+    --ink-3: oklch(0.605 0.013 252);
+    --line: oklch(0.268 0.011 260);
+    --line-strong: oklch(0.35 0.014 260);
+
+    --signal: oklch(0.8 0.113 200);
+    --signal-hover: oklch(0.87 0.1 200);
+    --signal-wash: oklch(0.262 0.045 205);
+    --signal-line: oklch(0.37 0.06 205);
+    --weft: oklch(0.62 0.145 295);
+
+    --good: oklch(0.79 0.14 158);
+    --good-wash: oklch(0.255 0.05 158);
+    --caution: oklch(0.83 0.12 82);
+    --caution-wash: oklch(0.272 0.045 82);
+    --bad: oklch(0.71 0.165 22);
+    --bad-wash: oklch(0.278 0.062 22);
+
+    --lift: 0 1px 2px oklch(0 0 0 / 0.5), 0 12px 34px -22px oklch(0 0 0 / 0.95);
+    --lift-hover: 0 1px 2px oklch(0 0 0 / 0.6), 0 24px 52px -24px oklch(0 0 0 / 1);
+
+    --weave-alpha: 0.055;
+    --bloom-a: 0.14;
+    --bloom-b: 0.1;
+    --grain: 0.022;
+
+    --primary-foreground: oklch(0.14 0.01 262);
+  }
+}
+
+.dark,
+[data-theme="dark"] {
+  --ground: oklch(0.128 0.007 262);
+  --paper: oklch(0.181 0.009 262);
+  --sunk: oklch(0.155 0.008 262);
+  --ink: oklch(0.965 0.004 250);
+  --ink-2: oklch(0.745 0.012 252);
+  --ink-3: oklch(0.605 0.013 252);
+  --line: oklch(0.268 0.011 260);
+  --line-strong: oklch(0.35 0.014 260);
+
+  --signal: oklch(0.8 0.113 200);
+  --signal-hover: oklch(0.87 0.1 200);
+  --signal-wash: oklch(0.262 0.045 205);
+  --signal-line: oklch(0.37 0.06 205);
+  --weft: oklch(0.62 0.145 295);
+
+  --good: oklch(0.79 0.14 158);
+  --good-wash: oklch(0.255 0.05 158);
+  --caution: oklch(0.83 0.12 82);
+  --caution-wash: oklch(0.272 0.045 82);
+  --bad: oklch(0.71 0.165 22);
+  --bad-wash: oklch(0.278 0.062 22);
+
+  --lift: 0 1px 2px oklch(0 0 0 / 0.5), 0 12px 34px -22px oklch(0 0 0 / 0.95);
+  --lift-hover: 0 1px 2px oklch(0 0 0 / 0.6), 0 24px 52px -24px oklch(0 0 0 / 1);
+
+  --weave-alpha: 0.055;
+  --bloom-a: 0.14;
+  --bloom-b: 0.1;
+  --grain: 0.022;
+
+  --primary-foreground: oklch(0.14 0.01 262);
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  --font-sans: var(--font-instrument-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: var(--font-instrument-serif), ui-serif, Georgia, "Times New Roman", serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Consolas, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-ground: var(--ground);
+  --color-paper: var(--paper);
+  --color-sunk: var(--sunk);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-ink-3: var(--ink-3);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-signal: var(--signal);
+  --color-signal-wash: var(--signal-wash);
+  --color-signal-line: var(--signal-line);
+  --color-weft: var(--weft);
+  --color-good: var(--good);
+  --color-good-wash: var(--good-wash);
+  --color-caution: var(--caution);
+  --color-caution-wash: var(--caution-wash);
+  --color-bad: var(--bad);
+  --color-bad-wash: var(--bad-wash);
+
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  /* The ground sits on <html> so the woven layers below can paint above it. */
+  html {
+    background: var(--ground);
+  }
+
+  body {
+    background: transparent;
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-feature-settings: "cv01", "ss01";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    position: relative;
+    min-block-size: 100dvb;
+  }
+
+  /*
+   * The weave: warp and weft hairlines, fading out toward the edges so the
+   * texture never fights the content. Fixed, so it stays put while the page moves.
+   */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background-image:
+      repeating-linear-gradient(
+        90deg,
+        color-mix(in oklab, var(--ink-3) calc(var(--weave-alpha) * 100%), transparent) 0 1px,
+        transparent 1px var(--weave-pitch)
+      ),
+      repeating-linear-gradient(
+        0deg,
+        color-mix(in oklab, var(--ink-3) calc(var(--weave-alpha) * 70%), transparent) 0 1px,
+        transparent 1px var(--weave-pitch)
+      );
+    mask-image: radial-gradient(ellipse 120% 90% at 50% 0%, #000 30%, transparent 100%);
+  }
+
+  /*
+   * Two slow blooms of light plus a fine grain, so the dark ground has depth
+   * instead of reading as a flat black rectangle.
+   */
+  body::after {
+    content: "";
+    position: fixed;
+    inset: -20%;
+    z-index: -1;
+    pointer-events: none;
+    background-image:
+      radial-gradient(
+        38% 30% at 18% 8%,
+        color-mix(in oklab, var(--signal) calc(var(--bloom-a) * 100%), transparent),
+        transparent 70%
+      ),
+      radial-gradient(
+        34% 28% at 88% 22%,
+        color-mix(in oklab, var(--weft) calc(var(--bloom-b) * 100%), transparent),
+        transparent 70%
+      );
+    animation: drift 44s ease-in-out infinite alternate;
+    will-change: transform;
+  }
+
+  /* Grain, applied to the shell so it does not multiply the fixed layers. */
+  body > * {
+    position: relative;
+  }
+
+  .font-display {
+    font-family: var(--font-serif);
+    font-weight: 400;
+    letter-spacing: -0.012em;
+    text-wrap: balance;
+  }
+
+  ::selection {
+    background: var(--signal-wash);
+    color: var(--signal-hover);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+
+  th, td, .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* =========================================================================
+   Motion. Short, purposeful, and switched off entirely for reduced motion.
+   ========================================================================= */
+
+@keyframes drift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(2%, 1.5%, 0) scale(1.06); }
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes sweep {
+  from { transform: scaleX(0); }
+  to   { transform: scaleX(1); }
+}
+
+@keyframes sheen {
+  from { transform: translateX(-120%) skewX(-18deg); }
+  to   { transform: translateX(220%) skewX(-18deg); }
+}
+
+.enter {
+  animation: rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+.enter-stack > * {
+  animation: rise 0.42s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+}
+.enter-stack > *:nth-child(1) { animation-delay: 0.02s; }
+.enter-stack > *:nth-child(2) { animation-delay: 0.07s; }
+.enter-stack > *:nth-child(3) { animation-delay: 0.12s; }
+.enter-stack > *:nth-child(4) { animation-delay: 0.17s; }
+.enter-stack > *:nth-child(5) { animation-delay: 0.22s; }
+.enter-stack > *:nth-child(n + 6) { animation-delay: 0.26s; }
+
+/*
+ * Cards that lead somewhere lift toward the pointer and pick up a thread of
+ * light along their top edge, which is where the weave metaphor pays off.
+ */
+.lift {
+  position: relative;
+  transition:
+    box-shadow 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.28s ease;
+}
+.lift::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  inset-block-start: 0;
+  block-size: 1px;
+  border-radius: inherit;
+  background: linear-gradient(90deg, transparent, var(--signal), transparent);
+  opacity: 0;
+  transition: opacity 0.28s ease;
+  pointer-events: none;
+}
+.lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--lift-hover);
+  border-color: var(--signal-line);
+}
+.lift:hover::after {
+  opacity: 0.7;
+}
+
+/* A single light sweep across a surface, for the one or two places worth it. */
+.sheen {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.sheen::before {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  inline-size: 45%;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--signal) 12%, transparent), transparent);
+  opacity: 0;
+  pointer-events: none;
+}
+.sheen:hover::before {
+  opacity: 1;
+  animation: sheen 0.9s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.row-hover {
+  transition: background-color 0.18s ease, color 0.18s ease;
+}
+
+.task-exit {
+  animation: collapse-out 0.38s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  pointer-events: none;
+  overflow: hidden;
+}
+@keyframes collapse-out {
+  0%   { opacity: 1; max-block-size: 6rem; }
+  45%  { opacity: 0; transform: translateX(10px); max-block-size: 6rem; }
+  100% { opacity: 0; transform: translateX(10px); max-block-size: 0; padding-block: 0; }
+}
+
+.nav-mark::before {
+  content: "";
+  position: absolute;
+  inset-block: 0.35rem;
+  inset-inline-start: 0;
+  inline-size: 2px;
+  border-radius: 2px;
+  background: var(--signal);
+  transform-origin: top;
+  animation: sweep 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  box-shadow: 0 0 12px color-mix(in oklab, var(--signal) 55%, transparent);
+}
+
+.bar-fill {
+  transition: width 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.gauge-arc {
+  transition: stroke-dashoffset 0.6s cubic-bezier(0.22, 1, 0.36, 1), stroke 0.3s ease;
+}
+
+/* Panels read as glass over the weave rather than as opaque slabs. */
+.glass {
+  background: color-mix(in oklab, var(--paper) 72%, transparent);
+  backdrop-filter: blur(14px) saturate(1.3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .enter,
+  .enter-stack > *,
+  .nav-mark::before,
+  .task-exit,
+  .sheen:hover::before,
+  body::after {
+    animation: none;
+  }
+  .lift:hover {
+    transform: none;
+  }
+  .gauge-arc,
+  .bar-fill,
+  .lift,
+  .row-hover {
+    transition-duration: 0.01ms;
+  }
+  .task-exit {
+    opacity: 0;
+  }
+}
+
+@supports (scrollbar-width: thin) {
+  .quiet-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+}
+.quiet-scroll {
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}

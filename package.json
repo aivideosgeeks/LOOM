@@ -1,0 +1,26 @@
+{
+  "name": "loom",
+  "private": true,
+  "version": "1.0.0",
+  "description": "LOOM — an AI-native CRM: lead scoring, drafted follow-ups, meeting summaries and natural-language pipeline queries.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"npm:dev -w @loom/api\" \"npm:dev -w @loom/web\"",
+    "dev:api": "npm run dev -w @loom/api",
+    "dev:web": "npm run dev -w @loom/web",
+    "build": "npm run build -ws --if-present",
+    "typecheck": "npm run typecheck -ws --if-present",
+    "test": "npm test -w @loom/api",
+    "seed": "npm run seed -w @loom/api",
+    "bench": "npm run bench -w @loom/api"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  },
+  "engines": {
+    "node": ">=20.9"
+  }
+}

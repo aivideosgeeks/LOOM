@@ -1,0 +1,12 @@
+{
+  "name": "@loom/e2e",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Browser pass that verifies every screen and captures the handbook screenshots",
+  "scripts": {
+    "ui": "node ui-pass.cjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "^25.9.0"
+  }
+}

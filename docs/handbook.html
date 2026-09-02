@@ -1,0 +1,602 @@
+<title>LOOM Handbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600&family=Instrument+Serif&family=JetBrains+Mono:wght@400;600&display=swap">
+
+<style>
+  /* Meridian — the same system the product uses, so the guide reads as part of it. */
+  :root {
+    --ground: #F4F6F8;
+    --paper: #FFFFFF;
+    --sunk: #EDF0F3;
+    --ink: #0E1319;
+    --ink-2: #4E5B67;
+    --ink-3: #7D8B97;
+    --line: #DFE4E9;
+    --line-strong: #C6CFD6;
+    --signal: #0B6E8C;
+    --signal-wash: #E4F1F5;
+    --good: #17794B;
+    --good-wash: #E3F2E9;
+    --caution: #8A5B10;
+    --caution-wash: #F8EFDF;
+    --bad: #B3372F;
+    --bad-wash: #FAE9E7;
+    --lift: 0 1px 2px rgba(14,19,25,.05), 0 10px 30px -22px rgba(14,19,25,.35);
+
+    --sans: "Instrument Sans", ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+    --serif: "Instrument Serif", ui-serif, Georgia, serif;
+    --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0B1014;
+      --paper: #151D23;
+      --sunk: #111820;
+      --ink: #E9EFF2;
+      --ink-2: #A6B4BD;
+      --ink-3: #7A8892;
+      --line: #253138;
+      --line-strong: #35454E;
+      --signal: #52C2DA;
+      --signal-wash: #122E36;
+      --good: #5FCB8C;
+      --good-wash: #12291C;
+      --caution: #E0AC55;
+      --caution-wash: #2A2113;
+      --bad: #E8776C;
+      --bad-wash: #2E1815;
+      --lift: 0 1px 2px rgba(0,0,0,.45), 0 10px 30px -22px rgba(0,0,0,.9);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0B1014; --paper: #151D23; --sunk: #111820;
+    --ink: #E9EFF2; --ink-2: #A6B4BD; --ink-3: #7A8892;
+    --line: #253138; --line-strong: #35454E;
+    --signal: #52C2DA; --signal-wash: #122E36;
+    --good: #5FCB8C; --good-wash: #12291C;
+    --caution: #E0AC55; --caution-wash: #2A2113;
+    --bad: #E8776C; --bad-wash: #2E1815;
+    --lift: 0 1px 2px rgba(0,0,0,.45), 0 10px 30px -22px rgba(0,0,0,.9);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .shell { max-width: 78rem; margin: 0 auto; padding: 0 1.25rem; }
+
+  /* ---------- masthead ---------- */
+  .mast { padding: 4rem 0 2.5rem; border-bottom: 1px solid var(--line); }
+  .kicker {
+    font-family: var(--mono); font-size: .68rem; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--signal); margin: 0 0 1rem;
+  }
+  h1 {
+    font-family: var(--serif); font-weight: 400;
+    font-size: clamp(2.6rem, 6vw, 4rem); line-height: 1; letter-spacing: -.02em;
+    margin: 0 0 1rem; text-wrap: balance;
+  }
+  .standfirst { font-size: 1.1rem; color: var(--ink-2); max-width: 42rem; margin: 0; }
+
+  /* ---------- layout ---------- */
+  .cols { display: grid; grid-template-columns: 1fr; gap: 2.5rem; padding: 2.5rem 0 6rem; }
+  @media (min-width: 62rem) { .cols { grid-template-columns: 15rem minmax(0, 1fr); gap: 3.5rem; } }
+
+  nav.toc { align-self: start; }
+  @media (min-width: 62rem) {
+    nav.toc { position: sticky; top: 1.5rem; max-height: calc(100dvh - 3rem); overflow-y: auto; scrollbar-width: thin; }
+  }
+  nav.toc p {
+    font-family: var(--mono); font-size: .64rem; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-3); margin: 1.5rem 0 .5rem;
+  }
+  nav.toc p:first-child { margin-top: 0; }
+  nav.toc a {
+    display: block; padding: .3rem .6rem; margin-left: -.6rem;
+    border-radius: 6px; color: var(--ink-2); text-decoration: none;
+    font-size: .89rem; transition: background-color .18s ease, color .18s ease;
+  }
+  nav.toc a:hover { background: var(--sunk); color: var(--ink); }
+
+  main { min-width: 0; display: flex; flex-direction: column; gap: 3.5rem; }
+
+  section { scroll-margin-top: 1.5rem; display: flex; flex-direction: column; gap: 1.1rem; }
+  h2 {
+    font-family: var(--serif); font-weight: 400; font-size: 2rem; line-height: 1.15;
+    letter-spacing: -.012em; margin: 0; padding-bottom: .7rem;
+    border-bottom: 2px solid var(--line-strong); text-wrap: balance;
+  }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: .8rem 0 0; letter-spacing: -.005em; }
+  p { margin: 0; max-width: 44rem; }
+  .muted { color: var(--ink-2); }
+
+  ul, ol { margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: .45rem; max-width: 44rem; }
+  li::marker { color: var(--ink-3); }
+
+  code {
+    font-family: var(--mono); font-size: .85em;
+    background: var(--sunk); padding: .1em .38em; border-radius: 4px;
+  }
+  pre {
+    margin: 0; background: var(--sunk); border: 1px solid var(--line);
+    border-radius: 10px; padding: 1rem 1.15rem; overflow-x: auto;
+    font-family: var(--mono); font-size: .82rem; line-height: 1.8;
+  }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  pre .c { color: var(--ink-3); }
+
+  /* ---------- panels ---------- */
+  .panel {
+    background: var(--paper); border: 1px solid var(--line);
+    border-radius: 12px; padding: 1.25rem 1.4rem; box-shadow: var(--lift);
+    display: flex; flex-direction: column; gap: .7rem;
+  }
+  .panel h3 { margin: 0; }
+
+  .note-box {
+    border-left: 3px solid var(--signal); background: var(--signal-wash);
+    border-radius: 0 8px 8px 0; padding: .9rem 1.1rem;
+    display: flex; flex-direction: column; gap: .4rem;
+  }
+  .note-box.warn { border-left-color: var(--caution); background: var(--caution-wash); }
+  .note-box strong { font-size: .82rem; letter-spacing: .02em; }
+  .note-box p { font-size: .93rem; color: var(--ink-2); }
+
+  /* ---------- tables ---------- */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--paper); }
+  table { border-collapse: collapse; width: 100%; min-width: 34rem; }
+  th, td { text-align: left; padding: .68rem .9rem; border-bottom: 1px solid var(--line); font-size: .91rem; vertical-align: top; }
+  thead th {
+    font-family: var(--mono); font-size: .63rem; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-3); font-weight: 600; background: var(--sunk); border-bottom: 1px solid var(--line-strong);
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  td:first-child { font-weight: 500; }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+
+  /* ---------- step list: order genuinely matters in these ---------- */
+  ol.steps { list-style: none; padding: 0; counter-reset: s; gap: .9rem; }
+  ol.steps > li {
+    counter-increment: s; position: relative; padding-left: 2.2rem;
+  }
+  ol.steps > li::before {
+    content: counter(s); position: absolute; left: 0; top: .05rem;
+    inline-size: 1.5rem; block-size: 1.5rem; border-radius: 50%;
+    background: var(--signal-wash); color: var(--signal);
+    font-family: var(--mono); font-size: .72rem; font-weight: 600;
+    display: grid; place-items: center;
+  }
+
+  /* ---------- gauge legend ---------- */
+  .gauges { display: flex; flex-wrap: wrap; gap: 1.75rem; align-items: center; }
+  .gauge-item { display: flex; align-items: center; gap: .7rem; }
+  .gauge-item span { font-size: .89rem; color: var(--ink-2); }
+  .gauge-item b { color: var(--ink); font-weight: 600; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .chip {
+    font-family: var(--mono); font-size: .7rem; padding: .22rem .5rem;
+    border-radius: 5px; background: var(--sunk); color: var(--ink-2);
+  }
+  .chip.good { background: var(--good-wash); color: var(--good); }
+  .chip.bad { background: var(--bad-wash); color: var(--bad); }
+  .chip.warn { background: var(--caution-wash); color: var(--caution); }
+  .chip.sig { background: var(--signal-wash); color: var(--signal); }
+
+  a { color: var(--signal); }
+  :focus-visible { outline: 2px solid var(--signal); outline-offset: 2px; border-radius: 4px; }
+
+  footer {
+    border-top: 1px solid var(--line); padding: 1.5rem 0 3rem;
+    color: var(--ink-3); font-size: .85rem;
+  }
+</style>
+
+<div class="shell">
+  <header class="mast">
+    <p class="kicker">User handbook</p>
+    <h1>LOOM</h1>
+    <p class="standfirst">
+      A CRM where the AI does the tedious half of selling: scoring every deal, drafting the follow-up,
+      turning a call transcript into tasks, and answering questions about your pipeline in plain English.
+      This guide covers every screen and every setting.
+    </p>
+  </header>
+
+  <div class="cols">
+    <nav class="toc">
+      <p>Start here</p>
+      <a href="#run">Running it</a>
+      <a href="#signin">Signing in</a>
+      <a href="#tour">The interface</a>
+
+      <p>Everyday work</p>
+      <a href="#contacts">Contacts</a>
+      <a href="#deals">Deals and stages</a>
+      <a href="#timeline">Timeline and notes</a>
+      <a href="#tasks">Tasks</a>
+
+      <p>The AI features</p>
+      <a href="#scoring">Lead scoring</a>
+      <a href="#drafting">Draft follow-up</a>
+      <a href="#ask">Ask your CRM</a>
+      <a href="#meetings">Meeting summaries</a>
+      <a href="#search">Semantic search</a>
+      <a href="#duplicates">Duplicate detection</a>
+      <a href="#risk">Risk flagging</a>
+
+      <p>Running the system</p>
+      <a href="#roles">Roles and access</a>
+      <a href="#usage">AI usage and cost</a>
+      <a href="#jobs">Background jobs</a>
+      <a href="#config">Configuration</a>
+      <a href="#offline">When AI is off</a>
+      <a href="#trouble">Troubleshooting</a>
+    </nav>
+
+    <main>
+      <section id="run">
+        <h2>Running it</h2>
+        <p>Nothing needs installing beyond Node. The API starts its own database, its own job queue, and seeds a demo team, so the first run works with no configuration at all.</p>
+        <pre><code>npm install
+npm run dev     <span class="c"># app on :3000, API on :4000</span></code></pre>
+        <p class="muted">The first start downloads a database binary and a small embedding model, then caches both. Later starts take a few seconds.</p>
+        <div class="note-box">
+          <strong>Demo data is not persistent by default</strong>
+          <p>Without a database URL the app runs an in-memory database, so restarting clears everything and reseeds. That is deliberate for a trial. See <a href="#config">Configuration</a> to point it at a real database.</p>
+        </div>
+      </section>
+
+      <section id="signin">
+        <h2>Signing in</h2>
+        <p>Open <code>localhost:3000</code>. Three demo accounts exist, all with the password <code>password123</code>.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Account</th><th>Role</th><th>Sees</th></tr></thead>
+            <tbody>
+              <tr><td>admin@crm.dev</td><td>Admin</td><td>Every record, plus the duplicate queue and AI cost pages</td></tr>
+              <tr><td>ben@crm.dev</td><td>Member</td><td>Only the contacts and deals they own</td></tr>
+              <tr><td>cara@crm.dev</td><td>Member</td><td>Only the contacts and deals they own</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Sign in as the admin to see the whole pipeline, or as a member to see how ownership scoping works. Sessions last a week and live in a cookie that JavaScript cannot read.</p>
+      </section>
+
+      <section id="tour">
+        <h2>The interface</h2>
+        <p>Three fixed areas, so nothing moves under you as you scroll.</p>
+        <ul>
+          <li><b>The left rail</b> stays put while the page scrolls. A sparkle next to an item marks a screen where the AI does the work.</li>
+          <li><b>The status pill</b> in the header is the single source of truth for whether AI is live. Green with a model name means Claude is answering. Amber means the app is running on its built-in fallbacks. Hover it for the embedding model, vector store and queue in use.</li>
+          <li><b>The main column</b> holds the page. On the dashboard the right-hand rail follows you as you scroll the left column, so both halves stay useful.</li>
+        </ul>
+        <p>The app follows your system light or dark setting. There is no theme switch to find.</p>
+      </section>
+
+      <section id="contacts">
+        <h2>Contacts</h2>
+        <p>People, with the company they work for and the deals attached to them.</p>
+        <h3>Creating and editing</h3>
+        <p><b>New contact</b> takes a name and optionally email, phone, company, tags and free-text profile notes. Only the name is required. Saving triggers a background duplicate check against everyone already in the system.</p>
+        <h3>The list</h3>
+        <p>Search matches name, email, company and tags at once. Every column header with an arrow sorts. The score column is the contact's strongest open deal, so sorting by it puts your best relationships on top.</p>
+        <h3>The detail page</h3>
+        <p>Deals for that person, the full timeline, their tasks, and a profile panel. Admins also see a banner when the contact has unreviewed duplicates.</p>
+        <div class="note-box warn">
+          <strong>Deleting is a cascade</strong>
+          <p>Deleting a contact removes their deals, notes, tasks and meetings too. To collapse two records into one without losing anything, use the duplicate queue instead.</p>
+        </div>
+      </section>
+
+      <section id="deals">
+        <h2>Deals and stages</h2>
+        <p>A deal is a title, a contact, a value, a stage and an expected close date.</p>
+        <div class="chips">
+          <span class="chip">Lead</span><span class="chip sig">Contacted</span><span class="chip sig">Proposal</span>
+          <span class="chip warn">Negotiation</span><span class="chip good">Won</span><span class="chip bad">Lost</span>
+        </div>
+        <p>Stage colour warms as the deal advances, so the hue itself tells you roughly where something sits. Won and Lost step out of that ramp into their outcomes.</p>
+        <p>Change stage from the dropdown on the deal page or in the edit dialog. Every change writes a line to the timeline, resets the clock the stall detector watches, and queues a re-score.</p>
+        <h3>Filtering the list</h3>
+        <ul>
+          <li>Search covers deal titles and the associated contact and company.</li>
+          <li>The stage dropdown narrows to one stage.</li>
+          <li><b>At risk only</b> shows just the flagged deals.</li>
+          <li>Sort by score, value, close date, last activity or stage.</li>
+        </ul>
+      </section>
+
+      <section id="timeline">
+        <h2>Timeline and notes</h2>
+        <p>The timeline is the record of everything that happened, on both contacts and deals.</p>
+        <p>Log a note, call, email or meeting from the composer. <code>Ctrl</code>+<code>Enter</code> saves without reaching for the mouse. Three things then happen in the background, and none of them make you wait:</p>
+        <ol class="steps">
+          <li>The note is classified for sentiment and a coloured label appears on it.</li>
+          <li>It is embedded so semantic search can find it by meaning.</li>
+          <li>The deal is re-scored and re-checked for risk.</li>
+        </ol>
+        <p>Entries marked <b>System</b> are written by the app itself, for stage changes and merges. They carry no sentiment and do not count as engagement.</p>
+        <div class="note-box">
+          <strong>The "flagged" marker</strong>
+          <p>A note containing instruction-like text ("ignore previous instructions…") is marked flagged. The content is kept and shown in full. The marker only tells you the text looked like an attempt to steer the AI, which the app treats strictly as data.</p>
+        </div>
+      </section>
+
+      <section id="tasks">
+        <h2>Tasks</h2>
+        <p>Follow-ups, either typed by you or extracted from a meeting transcript. A task carries a title, an optional due date, and the deal or contact it belongs to.</p>
+        <p>Ticking one strikes it through immediately and the row collapses out of the list. Overdue dates turn red, and anything due within two days turns amber. The <b>Tasks</b> screen collects everything across your records; the <b>Due this week</b> card on the dashboard is the short version.</p>
+        <p>Tasks marked <span class="chip sig">from meeting</span> were created by the summarizer rather than by a person.</p>
+      </section>
+
+      <section id="scoring">
+        <h2>Lead scoring</h2>
+        <p>Every deal carries a score from 0 to 100 estimating how likely it is to close. It is drawn as a ring, so you can read the pipeline without reading numbers.</p>
+        <div class="panel">
+          <div class="gauges">
+            <div class="gauge-item">
+              <svg width="46" height="46" viewBox="0 0 46 46" style="transform: rotate(-90deg)">
+                <circle cx="23" cy="23" r="20.75" fill="none" stroke="var(--line)" stroke-width="3.5"/>
+                <circle cx="23" cy="23" r="20.75" fill="none" stroke="var(--good)" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="130.4" stroke-dashoffset="27.4"/>
+              </svg>
+              <span><b>70 to 100</b><br>Strong. Push to close.</span>
+            </div>
+            <div class="gauge-item">
+              <svg width="46" height="46" viewBox="0 0 46 46" style="transform: rotate(-90deg)">
+                <circle cx="23" cy="23" r="20.75" fill="none" stroke="var(--line)" stroke-width="3.5"/>
+                <circle cx="23" cy="23" r="20.75" fill="none" stroke="var(--caution)" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="130.4" stroke-dashoffset="65.2"/>
+              </svg>
+              <span><b>40 to 69</b><br>Live, needs work.</span>
+            </div>
+            <div class="gauge-item">
+              <svg width="46" height="46" viewBox="0 0 46 46" style="transform: rotate(-90deg)">
+                <circle cx="23" cy="23" r="20.75" fill="none" stroke="var(--line)" stroke-width="3.5"/>
+                <circle cx="23" cy="23" r="20.75" fill="none" stroke="var(--ink-3)" stroke-width="3.5" stroke-linecap="round" stroke-dasharray="130.4" stroke-dashoffset="104.3"/>
+              </svg>
+              <span><b>Below 40</b><br>Cold or stalling.</span>
+            </div>
+          </div>
+        </div>
+        <p>Hover any gauge for the full breakdown. Six components add up, and each is shown with the input that produced it, so you can always see why a number moved.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Component</th><th class="num">Range</th><th>What moves it</th></tr></thead>
+            <tbody>
+              <tr><td>Stage prior</td><td class="num">0 to 60</td><td>How far along the pipeline the deal is</td></tr>
+              <tr><td>Recency</td><td class="num">0 to 12</td><td>Days since anyone touched it</td></tr>
+              <tr><td>Deal value</td><td class="num">0 to 6</td><td>Size, on a log scale, so big deals do not dominate</td></tr>
+              <tr><td>Stage velocity</td><td class="num">−15 to 6</td><td>Time in the current stage against that stage's threshold</td></tr>
+              <tr><td>Note sentiment</td><td class="num">−12 to 12</td><td>Recent note sentiment, weighted toward the newest, plus a trend adjustment</td></tr>
+              <tr><td>Engagement</td><td class="num">0 to 5</td><td>Human touches in the last 30 days</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Won is always 100 and Lost always 0. The score recalculates whenever the deal or its notes change, and a nightly pass refreshes the recency component so untouched deals cool off on their own. <b>Recompute</b> on the deal page forces it immediately.</p>
+        <div class="note-box">
+          <strong>Why the model is arithmetic, not a prediction</strong>
+          <p>The formula is deterministic so it can be tested, costs nothing to re-run, and can always be explained to whoever disagrees with it. The AI's contribution is the sentiment of each note, which feeds one component.</p>
+        </div>
+      </section>
+
+      <section id="drafting">
+        <h2>Draft follow-up</h2>
+        <p>On any deal or contact, <b>Draft follow-up</b> writes the next email for you.</p>
+        <ol class="steps">
+          <li>Optionally say what the email should do, for example "nudge on the revised pricing".</li>
+          <li>Pick a tone: professional, friendly or concise.</li>
+          <li><b>Generate</b>. The model reads the contact, the deal and its stage, the last eight timeline entries, open tasks and the most recent meeting summary.</li>
+          <li>Edit the subject and body freely. It is an ordinary text box.</li>
+          <li><b>Send &amp; log to timeline</b>, or copy it, or open it in your mail client.</li>
+        </ol>
+        <div class="note-box">
+          <strong>Nothing is ever sent automatically</strong>
+          <p>The AI only ever fills the box. Sending is always a click you make, and the sent email is written to the timeline so the history stays complete.</p>
+        </div>
+      </section>
+
+      <section id="ask">
+        <h2>Ask your CRM</h2>
+        <p>Type a question about your pipeline and get a filtered table back, not a paragraph.</p>
+        <p>Questions it answers well:</p>
+        <ul>
+          <li>Show me deals over $10k closing this month</li>
+          <li>Which contacts have not been touched in 30 days?</li>
+          <li>My at-risk deals, biggest first</li>
+          <li>Open deals in negotiation with a score above 70</li>
+          <li>Contacts at Northwind tagged enterprise</li>
+        </ul>
+        <p>Every answer shows the query that actually ran as a row of chips, for example <span class="chip">value gt 10000</span> <span class="chip">expectedCloseDate between 2026-09-01 and 2026-09-30</span>. You can always check the machine understood you.</p>
+        <h3>What it will refuse</h3>
+        <p>Anything that writes, deletes or sends. Anything needing analysis it cannot express as a filter, such as "why is this deal stuck". Anything unrelated to the CRM. It says so plainly rather than guessing.</p>
+        <div class="note-box">
+          <strong>The model never touches the database</strong>
+          <p>It proposes a small typed filter. The server checks every field and operator against a fixed allowlist, resolves the dates, rejects anything shaped like an injection, then runs a read-only query with your own access scope applied. A member cannot widen their view by asking nicely.</p>
+        </div>
+      </section>
+
+      <section id="meetings">
+        <h2>Meeting summaries</h2>
+        <p><b>Summarize meeting</b> on a deal takes a call transcript, pasted or uploaded as <code>.txt</code> or <code>.vtt</code>, and returns four things.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Output</th><th>What happens to it</th></tr></thead>
+            <tbody>
+              <tr><td>Summary</td><td>Written to the deal timeline as a meeting entry</td></tr>
+              <tr><td>Action items</td><td>Created as tasks on the deal, with owner and due date where stated</td></tr>
+              <tr><td>Sentiment</td><td>Feeds the note sentiment component of the lead score</td></tr>
+              <tr><td>Next steps and topics</td><td>Shown on the meeting card for context</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Processing happens in the background, so a long transcript never blocks the page. The card shows <b>Queued</b> then <b>Summarising</b> and fills in when done. Past meetings live on the <b>Meetings</b> tab of the deal.</p>
+      </section>
+
+      <section id="search">
+        <h2>Semantic search</h2>
+        <p>Search your notes by meaning rather than by keyword. Searching <b>pricing pushback</b> surfaces "budget has been cut for this quarter" and "the quote is about 30% above their budget line", neither of which contains a word from the query.</p>
+        <p>Describe the situation you are trying to find. Each result shows how strong the match is, which deal or contact it belongs to, and the note's sentiment.</p>
+        <p>A badge tells you which mode ran. <span class="chip sig">Semantic match</span> means real meaning-based search. <span class="chip">Keyword fallback</span> means the embedding model or vector store was unavailable and the app fell back to plain text search, with the reason shown next to it.</p>
+      </section>
+
+      <section id="duplicates">
+        <h2>Duplicate detection</h2>
+        <p class="muted">Admin only.</p>
+        <p>New and edited contacts are checked automatically, and a full sweep runs nightly. Likely duplicates land in a review queue rather than being merged.</p>
+        <p>The matcher is built for the ways duplicates actually happen: a typo in an email, a mistyped domain, a nickname, a swapped name order, a reformatted phone number, a company written two ways. Two different people at the same company are not duplicates and are not flagged.</p>
+        <h3>Reviewing</h3>
+        <p>Each candidate shows both records side by side with the reasons they matched and, when AI is on, a verdict and confidence. Then you choose:</p>
+        <ul>
+          <li><b>Keep this one</b> on the record you want to survive. Deals, notes, tasks and meetings move across, empty fields are filled from the other record, tags are combined, and the merge is logged on the timeline.</li>
+          <li><b>Not a duplicate</b> dismisses the pair so it stops coming back.</li>
+        </ul>
+        <div class="note-box">
+          <strong>Merging never happens on its own</strong>
+          <p>The queue is a suggestion. A person always picks the survivor. The retired record is hidden rather than deleted, so older links still resolve.</p>
+        </div>
+      </section>
+
+      <section id="risk">
+        <h2>Risk flagging</h2>
+        <p>Open deals are checked on every change and again by a daily scan. Four signals can fire:</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Signal</th><th>Fires when</th></tr></thead>
+            <tbody>
+              <tr><td>Stalled</td><td>The deal has sat in its stage past that stage's threshold, 14 days early on and 21 later</td></tr>
+              <tr><td>Inactive</td><td>Nobody has touched it for longer than the inactivity window, 14 days by default</td></tr>
+              <tr><td>Sentiment negative</td><td>Recent notes are negative, or sentiment has dropped sharply against older notes</td></tr>
+              <tr><td>Closing soon, unready</td><td>The close date is within a week but the deal is still early stage</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Flagged deals collect at the top of the dashboard, each with a plain-English reason and a suggested next step. When AI is on, Claude writes that explanation from the actual notes. When it is off, you get the rule-based version, which is shorter but just as specific.</p>
+        <p>A deal drops off the list as soon as the underlying signals clear. Won and Lost deals are never flagged.</p>
+      </section>
+
+      <section id="roles">
+        <h2>Roles and access</h2>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th></th><th>Member</th><th>Admin</th></tr></thead>
+            <tbody>
+              <tr><td>Contacts, deals, notes, tasks</td><td>Own records only</td><td>Everything</td></tr>
+              <tr><td>Ask your CRM, semantic search</td><td>Scoped to own records</td><td>Everything</td></tr>
+              <tr><td>Assign an owner</td><td>No</td><td>Yes</td></tr>
+              <tr><td>Duplicate review and merge</td><td>No</td><td>Yes</td></tr>
+              <tr><td>AI usage and cost</td><td>No</td><td>Yes</td></tr>
+              <tr><td>Create users, run jobs</td><td>No</td><td>Yes</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Scoping is applied in the database query, not in the interface, so it holds on every route including the AI ones.</p>
+      </section>
+
+      <section id="usage">
+        <h2>AI usage and cost</h2>
+        <p class="muted">Admin only.</p>
+        <p>Every AI call is logged: tokens in and out, cache reads, latency, status and an estimated cost. The page breaks this down per feature over 1, 7, 30 or 90 days, with a live feed of recent calls.</p>
+        <p>Statuses worth knowing:</p>
+        <ul>
+          <li><span class="chip good">ok</span> a real model call, billed.</li>
+          <li><span class="chip">cached</span> served from the response cache. No tokens, no cost.</li>
+          <li><span class="chip">fallback</span> no provider configured, so the built-in path ran.</li>
+          <li><span class="chip bad">error</span> or <span class="chip bad">timeout</span> the call failed and the feature degraded.</li>
+        </ul>
+        <p>The provider card shows the circuit breaker. After repeated failures it opens and calls fail fast instead of hanging, then recovers on its own. <b>Reset</b> clears it immediately.</p>
+      </section>
+
+      <section id="jobs">
+        <h2>Background jobs</h2>
+        <p>Work that would make you wait happens off the request. Scoring, sentiment, embedding, summarizing, duplicate checks and risk assessment all run as jobs, and rapid edits to one record collapse into a single job.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Scheduled job</th><th>Runs</th><th>Does</th></tr></thead>
+            <tbody>
+              <tr><td>Risk scan</td><td>Daily, 6am</td><td>Re-checks every open deal for risk signals</td></tr>
+              <tr><td>Rescore</td><td>Daily, 5am</td><td>Refreshes scores so untouched deals cool off</td></tr>
+              <tr><td>Duplicate sweep</td><td>Daily, 5.30am</td><td>Full pass over contacts</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Admins can trigger any of the three by hand from the AI usage page.</p>
+      </section>
+
+      <section id="config">
+        <h2>Configuration</h2>
+        <p>Copy <code>.env.example</code> to <code>.env</code>. Every setting has a working default; the ones below are the ones worth changing.</p>
+        <h3>Turning on Claude</h3>
+        <pre><code>ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-opus-5</code></pre>
+        <p>Restart, and the header pill turns green. Sentiment, drafts, summaries, question translation, risk explanations and duplicate verdicts are now written by the model.</p>
+        <h3>Persistent data and durable jobs</h3>
+        <pre><code>docker compose up -d          <span class="c"># database + redis</span>
+MONGODB_URI=mongodb://localhost:27017/crm
+REDIS_URL=redis://localhost:6379
+npm run seed -w @loom/api      <span class="c"># add --reset to wipe</span></code></pre>
+        <p>With a Redis URL set, jobs move to a durable queue with retries and real cron schedules. Without it they run in process, which is fine for a single machine but is lost on restart.</p>
+        <h3>Embeddings and vector search</h3>
+        <p>By default a small model runs inside the app and needs no key. Set <code>VOYAGE_API_KEY</code> or <code>OPENAI_API_KEY</code> to use a hosted one. For large note volumes, set <code>PINECONE_API_KEY</code> and <code>PINECONE_INDEX</code> to move vectors out of the database.</p>
+        <h3>Tuning</h3>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Default</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td>RISK_INACTIVITY_DAYS</td><td>14</td><td>Silence before a deal counts as inactive</td></tr>
+              <tr><td>AI_TIMEOUT_MS</td><td>45000</td><td>How long an AI call may take before falling back</td></tr>
+              <tr><td>AI_RATE_LIMIT_PER_MINUTE</td><td>30</td><td>AI requests per user per minute</td></tr>
+              <tr><td>AI_CIRCUIT_FAILURES</td><td>4</td><td>Consecutive failures before the circuit opens</td></tr>
+              <tr><td>SMTP_URL</td><td>unset</td><td>Set to actually deliver email; otherwise drafts are logged only</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="offline">
+        <h2>When AI is off</h2>
+        <p>No feature disappears without a provider, and none of them break a screen. Each degrades to something honest and says so in the interface.</p>
+        <div class="tablewrap">
+          <table>
+            <thead><tr><th>Feature</th><th>Without a provider</th></tr></thead>
+            <tbody>
+              <tr><td>Lead scoring</td><td>Sentiment comes from a keyword model. The score formula is unchanged.</td></tr>
+              <tr><td>Draft follow-up</td><td>A stage-appropriate template, labelled as one.</td></tr>
+              <tr><td>Ask your CRM</td><td>Built-in rules handle the common questions. Anything else says so.</td></tr>
+              <tr><td>Meeting summaries</td><td>Extracted summary and commitment-style action items.</td></tr>
+              <tr><td>Semantic search</td><td>Keyword search, with the reason shown.</td></tr>
+              <tr><td>Duplicates</td><td>Full matching, minus the written verdict.</td></tr>
+              <tr><td>Risk flagging</td><td>The same signals with a rule-based explanation.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The same applies when the provider is merely slow or erroring. A timeout falls back rather than hanging the page.</p>
+      </section>
+
+      <section id="trouble">
+        <h2>Troubleshooting</h2>
+        <h3>Everything logged me out</h3>
+        <p>The API restarted while running the in-memory database, so it reseeded with new accounts. Sign back in. Set a database URL to stop this.</p>
+        <h3>A score or risk flag looks stale</h3>
+        <p>Both update on a background job a moment after the change. <b>Recompute</b> on the deal page forces it. If nothing moves, check the circuit breaker on the AI usage page.</p>
+        <h3>Semantic search says keyword fallback</h3>
+        <p>Either nothing has been embedded yet, or the embedding model is still loading on first run, or the vector store is unreachable. Hover the status pill to see which.</p>
+        <h3>A meeting stayed queued</h3>
+        <p>Open it and use <b>Retry</b>. If the provider was down, the retry will pick it up once it recovers.</p>
+        <h3>My question was rejected</h3>
+        <p>The rejection text says why. Usually the question asked for a write, or for an aggregate the filter language cannot express. Rephrase it as a filter over deals or contacts.</p>
+      </section>
+    </main>
+  </div>
+
+  <footer>LOOM handbook · covers the dashboard, contacts, deals, tasks and all seven AI features</footer>
+</div>

@@ -1,0 +1,24 @@
+node_modules/
+.next/
+dist/
+coverage/
+.env
+.env.local
+*.log
+.cache/
+apps/api/.cache/
+.DS_Store
+
+# e2e artefacts
+e2e/shots/
+e2e/shots-web/
+e2e/ui-results.json
+e2e/node_modules/
+
+# Local env
+.env
+.env.local
+.vercel/
+
+# Generated docs artefacts are kept; their raw sources are not
+docs/screenshots/
