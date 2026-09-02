@@ -22,6 +22,12 @@ services:
       - key: NODE_ENV
         value: production
 
+      # mongodb-memory-server is only used when MONGODB_URI is unset, but its
+      # postinstall downloads a full MongoDB server binary regardless. Production
+      # talks to Atlas, so skip the download rather than pay for it every build.
+      - key: MONGOMS_DISABLE_POSTINSTALL
+        value: "1"
+
       # Where the browser reaches the app. Used for CORS and for invitation links,
       # so it must be the Vercel URL, with no trailing slash.
       - key: WEB_ORIGIN
