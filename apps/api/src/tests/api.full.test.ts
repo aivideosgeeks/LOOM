@@ -1,3 +1,4 @@
+import { AI_FEATURES } from "@loom/shared";
 /**
  * Exhaustive endpoint coverage: every route on every router, with its auth rule,
  * its validation rule, its role rule and its main success path.
@@ -635,10 +636,10 @@ describe("admin router", () => {
 
   it("GET /admin/ai-usage reports a row for every feature", async () => {
     const res = await ctx.admin.get("/api/admin/ai-usage?days=30").expect(200);
-    expect(res.body.rows).toHaveLength(8);
-    expect(res.body.rows.map((r: { feature: string }) => r.feature)).toEqual(
-      expect.arrayContaining(["lead_scoring", "sentiment", "email_draft", "nl_query", "meeting_summary", "semantic_search", "duplicate_detection", "risk_flagging"]),
-    );
+    // Derived from the registry so adding a feature updates the audit, rather
+    // than failing a hardcoded count that says nothing about correctness.
+    expect(res.body.rows).toHaveLength(AI_FEATURES.length);
+    expect(res.body.rows.map((r: { feature: string }) => r.feature)).toEqual(expect.arrayContaining([...AI_FEATURES]));
     expect(typeof res.body.totalCostUsd).toBe("number");
     expect(res.body.status).toHaveProperty("circuit");
     expect(Array.isArray(res.body.recent)).toBe(true);

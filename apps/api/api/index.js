@@ -247,7 +247,8 @@ var init_constants = __esm({
       "meeting_summary",
       "semantic_search",
       "duplicate_detection",
-      "risk_flagging"
+      "risk_flagging",
+      "assistant"
     ];
     STAGE_STALL_THRESHOLD_DAYS = {
       Lead: 14,
@@ -839,6 +840,153 @@ var init_nlquery = __esm({
   }
 });
 
+// ../../packages/shared/src/assistant.ts
+import { z as z4 } from "zod";
+function isValidDueDate(raw) {
+  return DATE_TOKEN_SET.has(raw) || RELATIVE_RE2.test(raw) || ISO_DATE_RE2.test(raw);
+}
+function validateAssistantPlan(raw) {
+  const parsed2 = assistantPlanLlmSchema.safeParse(raw);
+  if (!parsed2.success) {
+    return {
+      ok: false,
+      code: "invalid",
+      reason: "The assistant proposed something that does not fit the allowed shape.",
+      details: parsed2.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`)
+    };
+  }
+  const plan = parsed2.data;
+  if (plan.intent === "unsupported") {
+    return { ok: false, code: "unsupported", reason: plan.summary, details: [] };
+  }
+  if (plan.intent === "answer" && plan.actions.length > 0) {
+    return {
+      ok: false,
+      code: "invalid",
+      reason: "The assistant marked this as a question but still proposed changes.",
+      details: []
+    };
+  }
+  if (plan.intent === "act" && plan.actions.length === 0) {
+    return { ok: false, code: "invalid", reason: "The assistant proposed no action to take.", details: [] };
+  }
+  const details = [];
+  for (const [i, action] of plan.actions.entries()) {
+    const at = `actions[${i}]`;
+    if (action.kind === "create_task") {
+      if (action.dueDate && !isValidDueDate(action.dueDate)) {
+        details.push(`${at}.dueDate: "${action.dueDate}" is not a date this system understands`);
+      }
+      if (!action.deal && !action.contact) {
+        details.push(`${at}: a task must be attached to a deal or a contact`);
+      }
+    }
+    if (action.kind === "add_note" && !action.deal && !action.contact) {
+      details.push(`${at}: a note must be attached to a deal or a contact`);
+    }
+  }
+  if (details.length > 0) {
+    return { ok: false, code: "invalid", reason: "The proposed changes were not usable.", details };
+  }
+  return { ok: true, plan };
+}
+function describeAction(action) {
+  switch (action.kind) {
+    case "create_task": {
+      const target = action.deal?.name ?? action.contact?.name ?? "";
+      const when = action.dueDate ? `, due ${action.dueDate.replace(/_/g, " ")}` : "";
+      return `Add task "${action.title}" on ${target}${when}`;
+    }
+    case "add_note": {
+      const target = action.deal?.name ?? action.contact?.name ?? "";
+      const preview = action.content.length > 60 ? `${action.content.slice(0, 60)}\u2026` : action.content;
+      return `Add a note to ${target}: "${preview}"`;
+    }
+    case "move_deal":
+      return `Move ${action.deal.name} to ${action.stage}`;
+    case "complete_task":
+      return `Mark "${action.task.name}" as done`;
+  }
+}
+var targetRefSchema, MAX_NOTE_LENGTH, MAX_TASK_TITLE, assistantActionLlmSchema, ASSISTANT_MAX_ACTIONS, assistantPlanLlmSchema, DATE_TOKEN_SET, RELATIVE_RE2, ISO_DATE_RE2, objectId, resolvedActionSchema, assistantExecuteSchema;
+var init_assistant = __esm({
+  "../../packages/shared/src/assistant.ts"() {
+    "use strict";
+    init_constants();
+    init_nlquery();
+    targetRefSchema = z4.object({
+      /** Deal title, contact name, or task title, as the user said it. */
+      name: z4.string().trim().min(1).max(200)
+    });
+    MAX_NOTE_LENGTH = 4e3;
+    MAX_TASK_TITLE = 300;
+    assistantActionLlmSchema = z4.discriminatedUnion("kind", [
+      z4.object({
+        kind: z4.literal("create_task"),
+        title: z4.string().trim().min(1).max(MAX_TASK_TITLE),
+        deal: targetRefSchema.nullish(),
+        contact: targetRefSchema.nullish(),
+        /** A token from the shared date grammar, an ISO date, or a relative offset like +3d. */
+        dueDate: z4.string().trim().max(40).nullish()
+      }),
+      z4.object({
+        kind: z4.literal("add_note"),
+        content: z4.string().trim().min(1).max(MAX_NOTE_LENGTH),
+        deal: targetRefSchema.nullish(),
+        contact: targetRefSchema.nullish()
+      }),
+      z4.object({
+        kind: z4.literal("move_deal"),
+        deal: targetRefSchema,
+        stage: z4.enum(PIPELINE_STAGES)
+      }),
+      z4.object({
+        kind: z4.literal("complete_task"),
+        task: targetRefSchema
+      })
+    ]);
+    ASSISTANT_MAX_ACTIONS = 5;
+    assistantPlanLlmSchema = z4.object({
+      /** "answer" when the message is a question, "act" when it asks for a change. */
+      intent: z4.enum(["answer", "act", "unsupported"]),
+      /** One sentence, in the user's own terms, describing what will happen. */
+      summary: z4.string().trim().min(1).max(400),
+      actions: z4.array(assistantActionLlmSchema).max(ASSISTANT_MAX_ACTIONS).default([])
+    });
+    DATE_TOKEN_SET = new Set(NL_DATE_TOKENS);
+    RELATIVE_RE2 = /^[+-]\d{1,4}[dwmy]$/;
+    ISO_DATE_RE2 = /^\d{4}-\d{2}-\d{2}$/;
+    objectId = z4.string().regex(/^[a-f\d]{24}$/i, "not a record id");
+    resolvedActionSchema = z4.discriminatedUnion("kind", [
+      z4.object({
+        kind: z4.literal("create_task"),
+        title: z4.string().trim().min(1).max(MAX_TASK_TITLE),
+        deal: objectId.nullable(),
+        contact: objectId.nullable(),
+        dueDate: z4.string().nullable()
+      }),
+      z4.object({
+        kind: z4.literal("add_note"),
+        content: z4.string().trim().min(1).max(MAX_NOTE_LENGTH),
+        deal: objectId.nullable(),
+        contact: objectId.nullable()
+      }),
+      z4.object({
+        kind: z4.literal("move_deal"),
+        deal: objectId,
+        stage: z4.enum(PIPELINE_STAGES)
+      }),
+      z4.object({
+        kind: z4.literal("complete_task"),
+        task: objectId
+      })
+    ]);
+    assistantExecuteSchema = z4.object({
+      actions: z4.array(resolvedActionSchema).min(1).max(ASSISTANT_MAX_ACTIONS)
+    });
+  }
+});
+
 // ../../packages/shared/src/index.ts
 var init_src = __esm({
   "../../packages/shared/src/index.ts"() {
@@ -847,6 +995,7 @@ var init_src = __esm({
     init_types();
     init_schemas();
     init_nlquery();
+    init_assistant();
   }
 });
 
@@ -1335,7 +1484,7 @@ var init_Task = __esm({
         owner: { type: Schema5.Types.ObjectId, ref: "User", required: true, index: true },
         dueDate: { type: Date, default: null },
         done: { type: Boolean, default: false },
-        source: { type: String, enum: ["manual", "meeting"], default: "manual" },
+        source: { type: String, enum: ["manual", "meeting", "assistant"], default: "manual" },
         meeting: { type: Schema5.Types.ObjectId, ref: "Meeting", default: null }
       },
       { timestamps: true }
@@ -1422,7 +1571,7 @@ var init_Invite = __esm({
 
 // src/models/Ai.ts
 import { Schema as Schema9, model as model9 } from "mongoose";
-var aiUsageSchema, AiUsage, aiCacheSchema, AiCache, noteEmbeddingSchema, NoteEmbedding;
+var aiUsageSchema, AiUsage, aiCacheSchema, AiCache, noteEmbeddingSchema, NoteEmbedding, assistantExchangeSchema, AssistantExchange;
 var init_Ai = __esm({
   "src/models/Ai.ts"() {
     "use strict";
@@ -1475,6 +1624,21 @@ var init_Ai = __esm({
     noteEmbeddingSchema.index({ note: 1, model: 1 }, { unique: true });
     noteEmbeddingSchema.index({ model: 1 });
     NoteEmbedding = model9("NoteEmbedding", noteEmbeddingSchema);
+    assistantExchangeSchema = new Schema9(
+      {
+        owner: { type: Schema9.Types.ObjectId, ref: "User", required: true, index: true },
+        message: { type: String, required: true },
+        kind: { type: String, enum: ["answer", "proposal", "refused", "applied"], required: true },
+        summary: { type: String, default: "" },
+        /** Applied action descriptions, so history shows what actually changed. */
+        applied: { type: [String], default: [] },
+        expiresAt: { type: Date, required: true }
+      },
+      { timestamps: { createdAt: true, updatedAt: false } }
+    );
+    assistantExchangeSchema.index({ owner: 1, createdAt: -1 });
+    assistantExchangeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+    AssistantExchange = model9("AssistantExchange", assistantExchangeSchema);
   }
 });
 
@@ -1483,6 +1647,7 @@ var models_exports = {};
 __export(models_exports, {
   AiCache: () => AiCache,
   AiUsage: () => AiUsage,
+  AssistantExchange: () => AssistantExchange,
   Contact: () => Contact,
   Deal: () => Deal,
   DuplicateCandidate: () => DuplicateCandidate,
@@ -1867,10 +2032,10 @@ var init_fallback = __esm({
 });
 
 // src/ai/provider/openaiCompatible.ts
-import { z as z4 } from "zod";
+import { z as z5 } from "zod";
 function toJsonSchema(schema) {
   try {
-    return z4.toJSONSchema(schema, { target: "draft-7", io: "output" });
+    return z5.toJSONSchema(schema, { target: "draft-7", io: "output" });
   } catch {
     return { type: "object" };
   }
@@ -2443,7 +2608,7 @@ var init_connect = __esm({
 });
 
 // src/ai/features/duplicates.ts
-import { z as z5 } from "zod";
+import { z as z6 } from "zod";
 function normalizeEmail(email) {
   if (!email) return null;
   const e = email.trim().toLowerCase();
@@ -2826,10 +2991,10 @@ var init_duplicates = __esm({
       zach: "zachary"
     };
     COMPANY_SUFFIX = /\b(inc|incorporated|llc|ltd|limited|corp|corporation|co|company|gmbh|plc|sa|ag|group|holdings|technologies|technology|tech|labs|software|solutions)\b/g;
-    duplicateVerdictSchema = z5.object({
-      isDuplicate: z5.boolean(),
-      confidence: z5.number(),
-      reason: z5.string()
+    duplicateVerdictSchema = z6.object({
+      isDuplicate: z6.boolean(),
+      confidence: z6.number(),
+      reason: z6.string()
     });
   }
 });
@@ -3086,7 +3251,7 @@ var init_activity = __esm({
 });
 
 // src/ai/features/sentiment.ts
-import { z as z6 } from "zod";
+import { z as z7 } from "zod";
 function labelFor(score) {
   if (score >= 0.2) return "positive";
   if (score <= -0.2) return "negative";
@@ -3145,10 +3310,10 @@ var init_sentiment = __esm({
     init_gateway();
     init_prompts();
     init_sanitize();
-    sentimentSchema2 = z6.object({
-      score: z6.number(),
-      label: z6.enum(["positive", "neutral", "negative"]),
-      rationale: z6.string()
+    sentimentSchema2 = z7.object({
+      score: z7.number(),
+      label: z7.enum(["positive", "neutral", "negative"]),
+      rationale: z7.string()
     });
     DAY_MS3 = 864e5;
     clamp2 = (n, lo, hi) => Math.min(hi, Math.max(lo, n));
@@ -3253,7 +3418,7 @@ var init_sentiment = __esm({
 });
 
 // src/ai/features/meetingSummary.ts
-import { z as z7 } from "zod";
+import { z as z8 } from "zod";
 function normalizeDate(value) {
   if (!value) return null;
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(value.trim());
@@ -3392,22 +3557,22 @@ var init_meetingSummary = __esm({
     init_prompts();
     init_sanitize();
     init_sentiment();
-    meetingResultSchema = z7.object({
-      summary: z7.string(),
-      actionItems: z7.array(
-        z7.object({
-          title: z7.string(),
-          owner: z7.string().nullable(),
-          dueDate: z7.string().nullable()
+    meetingResultSchema = z8.object({
+      summary: z8.string(),
+      actionItems: z8.array(
+        z8.object({
+          title: z8.string(),
+          owner: z8.string().nullable(),
+          dueDate: z8.string().nullable()
         })
       ),
-      sentiment: z7.object({
-        score: z7.number(),
-        label: z7.enum(["positive", "neutral", "negative"]),
-        rationale: z7.string()
+      sentiment: z8.object({
+        score: z8.number(),
+        label: z8.enum(["positive", "neutral", "negative"]),
+        rationale: z8.string()
       }),
-      nextSteps: z7.array(z7.string()),
-      keyTopics: z7.array(z7.string())
+      nextSteps: z8.array(z8.string()),
+      keyTopics: z8.array(z8.string())
     });
     DAY_MS4 = 864e5;
     MAX_TRANSCRIPT_CHARS = 15e4;
@@ -3415,7 +3580,7 @@ var init_meetingSummary = __esm({
 });
 
 // src/ai/features/riskFlag.ts
-import { z as z8 } from "zod";
+import { z as z9 } from "zod";
 function evaluateRiskSignals(inputs) {
   const signals = [];
   const reasons = [];
@@ -3556,9 +3721,9 @@ var init_riskFlag = __esm({
     init_gateway();
     init_prompts();
     init_sanitize();
-    riskReasonSchema = z8.object({
-      reason: z8.string(),
-      suggestedAction: z8.string()
+    riskReasonSchema = z9.object({
+      reason: z9.string(),
+      suggestedAction: z9.string()
     });
     round12 = (n) => Math.round(n * 10) / 10;
     ACTIONS = {
@@ -4614,7 +4779,7 @@ var init_seed = __esm({
 // src/routes/admin.ts
 import { Router } from "express";
 import { Types as Types2 } from "mongoose";
-import { z as z9 } from "zod";
+import { z as z10 } from "zod";
 var adminRouter, usageQuery, JOBS;
 var init_admin = __esm({
   "src/routes/admin.ts"() {
@@ -4628,7 +4793,7 @@ var init_admin = __esm({
     init_gateway();
     adminRouter = Router();
     adminRouter.use(requireRole("admin"));
-    usageQuery = z9.object({ days: z9.coerce.number().int().min(1).max(365).default(30) });
+    usageQuery = z10.object({ days: z10.coerce.number().int().min(1).max(365).default(30) });
     adminRouter.get("/ai-usage", validateQuery(usageQuery), async (_req, res) => {
       const { days } = parsedQuery(res);
       const since = new Date(Date.now() - days * 864e5);
@@ -4726,6 +4891,166 @@ var init_admin = __esm({
       });
       res.status(201).json({ ...counts, enriched: queue2.provider !== "inline" });
     });
+  }
+});
+
+// src/services/contacts.ts
+async function createContact(input, user) {
+  const owner = user.role === "admin" ? input.owner ?? user.id : user.id;
+  const contact = await Contact.create({
+    name: input.name,
+    email: clean(input.email) ?? null,
+    phone: clean(input.phone) ?? null,
+    company: clean(input.company) ?? null,
+    tags: input.tags ?? [],
+    notes: clean(input.notes) ?? null,
+    owner,
+    lastActivityAt: /* @__PURE__ */ new Date()
+  });
+  await jobs.dedupeContact(String(contact._id));
+  await jobs.scoreContact(String(contact._id));
+  return contact;
+}
+async function updateContact(contact, input, user) {
+  if (user.role !== "admin" && String(contact.owner) !== user.id) throw forbidden("You can only edit your own contacts");
+  if (input.name !== void 0) contact.name = input.name;
+  if (input.email !== void 0) contact.email = clean(input.email) ?? null;
+  if (input.phone !== void 0) contact.phone = clean(input.phone) ?? null;
+  if (input.company !== void 0) contact.company = clean(input.company) ?? null;
+  if (input.tags !== void 0) contact.tags = input.tags;
+  if (input.notes !== void 0) contact.notes = clean(input.notes) ?? null;
+  if (input.owner && user.role === "admin") contact.owner = input.owner;
+  contact.lastActivityAt = /* @__PURE__ */ new Date();
+  await contact.save();
+  await jobs.dedupeContact(String(contact._id));
+  await jobs.scoreContact(String(contact._id));
+  return contact;
+}
+async function loadContactForUser(id, user) {
+  const contact = await Contact.findById(id);
+  if (!contact || contact.mergedInto) throw notFound("Contact");
+  if (user.role !== "admin" && String(contact.owner) !== user.id) throw notFound("Contact");
+  return contact;
+}
+async function deleteContact(contact) {
+  const notes = await Note.find({ contact: contact._id }).select("_id").lean();
+  await Promise.all([
+    Deal.deleteMany({ contact: contact._id }),
+    Note.deleteMany({ contact: contact._id }),
+    Task.deleteMany({ contact: contact._id }),
+    Meeting.deleteMany({ contact: contact._id }),
+    DuplicateCandidate.deleteMany({ $or: [{ a: contact._id }, { b: contact._id }] })
+  ]);
+  for (const n of notes) await removeNoteEmbedding(String(n._id));
+  await contact.deleteOne();
+}
+var clean;
+var init_contacts = __esm({
+  "src/services/contacts.ts"() {
+    "use strict";
+    init_errors();
+    init_queue();
+    init_models();
+    init_semanticSearch();
+    clean = (v) => v === void 0 ? void 0 : v?.trim() ? v.trim() : null;
+  }
+});
+
+// src/services/deals.ts
+function parseDate(value) {
+  if (!value) return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+async function createDeal(input, user) {
+  const contact = await Contact.findById(input.contact);
+  if (!contact || contact.mergedInto) throw badRequest("Contact not found");
+  assertCanAccess({ user }, contact.owner);
+  const owner = user.role === "admin" ? input.owner ?? user.id : user.id;
+  const now = /* @__PURE__ */ new Date();
+  const deal = await Deal.create({
+    title: input.title,
+    contact: contact._id,
+    value: input.value,
+    stage: input.stage,
+    owner,
+    expectedCloseDate: parseDate(input.expectedCloseDate),
+    stageEnteredAt: now,
+    stageHistory: [{ stage: input.stage, enteredAt: now }],
+    lastActivityAt: now
+  });
+  await logSystemNote({ dealId: String(deal._id), contactId: String(contact._id), ownerId: owner, authorId: user.id, content: `Deal created in stage ${input.stage}` });
+  await jobs.scoreDeal(String(deal._id));
+  return deal;
+}
+async function updateDeal(deal, input, user) {
+  if (user.role !== "admin" && String(deal.owner) !== user.id) throw forbidden("You can only edit your own deals");
+  const changes = [];
+  if (input.title !== void 0 && input.title !== deal.title) {
+    deal.title = input.title;
+    changes.push("title");
+  }
+  if (input.value !== void 0 && input.value !== deal.value) {
+    changes.push(`value ${deal.value} \u2192 ${input.value}`);
+    deal.value = input.value;
+  }
+  if (input.expectedCloseDate !== void 0) {
+    deal.expectedCloseDate = parseDate(input.expectedCloseDate);
+    changes.push("expected close date");
+  }
+  if (input.contact && String(deal.contact) !== input.contact) {
+    const contact = await Contact.findById(input.contact);
+    if (!contact || contact.mergedInto) throw badRequest("Contact not found");
+    assertCanAccess({ user }, contact.owner);
+    deal.contact = contact._id;
+    changes.push("contact");
+  }
+  if (input.owner && user.role === "admin" && String(deal.owner) !== input.owner) {
+    deal.owner = input.owner;
+    changes.push("owner");
+  }
+  if (input.stage && input.stage !== deal.stage) {
+    const from = deal.stage;
+    const now = /* @__PURE__ */ new Date();
+    deal.stage = input.stage;
+    deal.stageEnteredAt = now;
+    deal.stageHistory.push({ stage: input.stage, enteredAt: now });
+    await deal.save();
+    await logSystemNote({ dealId: String(deal._id), contactId: String(deal.contact), ownerId: String(deal.owner), authorId: user.id, content: `Stage changed from ${from} to ${input.stage}` });
+    changes.push("stage");
+  }
+  if (changes.length) {
+    deal.lastActivityAt = /* @__PURE__ */ new Date();
+    await deal.save();
+    await jobs.scoreDeal(String(deal._id));
+  }
+  return deal;
+}
+async function loadDealForUser(id, user) {
+  const deal = await Deal.findById(id);
+  if (!deal) throw notFound("Deal");
+  if (user.role !== "admin" && String(deal.owner) !== user.id) throw notFound("Deal");
+  return deal;
+}
+async function deleteDeal(deal) {
+  const notes = await Note.find({ deal: deal._id }).select("_id").lean();
+  await Promise.all([
+    Note.deleteMany({ deal: deal._id }),
+    Task.deleteMany({ deal: deal._id }),
+    Meeting.deleteMany({ deal: deal._id })
+  ]);
+  for (const n of notes) await removeNoteEmbedding(String(n._id));
+  await deal.deleteOne();
+}
+var init_deals = __esm({
+  "src/services/deals.ts"() {
+    "use strict";
+    init_auth();
+    init_errors();
+    init_queue();
+    init_models();
+    init_semanticSearch();
+    init_activity();
   }
 });
 
@@ -4900,6 +5225,226 @@ var init_nlQuery = __esm({
   }
 });
 
+// src/ai/features/assistant.ts
+function buildSystem(today) {
+  return `You are the assistant inside a CRM. You either answer a question about the pipeline, or propose changes for the user to confirm. You never claim to have done something: everything you propose is reviewed by a human first.
+
+Today is ${today}.
+
+Decide the intent:
+- "answer" when the message asks about existing records ("which deals are stalling?"). Propose no actions; the CRM answers these itself.
+- "act" when the message asks for a change ("remind me to call Sarah on Friday", "move the Globex deal to Proposal").
+- "unsupported" when it is neither, or asks for something outside the allowed changes. Put the reason in summary.
+
+The only changes you may propose:
+- create_task: a follow-up. Needs a title and either a deal or a contact.
+- add_note: a note on a deal or a contact.
+- move_deal: change one deal's pipeline stage. Stages: ${PIPELINE_STAGES.join(", ")}.
+- complete_task: mark an existing task done.
+
+Refer to records by the name the user used, in the "name" field. Never invent an
+identifier; the server matches names to records itself. If the user is vague
+about which record they mean, choose "unsupported" and ask which one.
+
+Dates use these forms only: today, tomorrow, start_of_week, end_of_week,
+end_of_month, an offset like +3d or +2w, or an ISO date like 2026-05-04.
+
+summary is one sentence, in the user's own words, saying what will happen.
+
+${UNTRUSTED_DATA_RULES}`;
+}
+function scope(user) {
+  return user.role === "admin" ? {} : { owner: user.id };
+}
+function nameFilter(field, name) {
+  return { [field]: { $regex: escapeRegex(name), $options: "i" } };
+}
+async function resolveDeal(ref, user) {
+  const found = await Deal.find({ ...scope(user), ...nameFilter("title", ref.name) }).select("title").limit(6).lean();
+  if (found.length === 1) return { ok: true, value: String(found[0]._id) };
+  if (found.length === 0) return { ok: false, message: `No deal matching "${ref.name}".` };
+  return {
+    ok: false,
+    message: `"${ref.name}" matches more than one deal: ${found.map((d) => d.title).join(", ")}. Which one?`
+  };
+}
+async function resolveContact(ref, user) {
+  const found = await Contact.find({
+    ...scope(user),
+    $or: [nameFilter("name", ref.name), nameFilter("company", ref.name)]
+  }).select("name company").limit(6).lean();
+  if (found.length === 1) return { ok: true, value: String(found[0]._id) };
+  if (found.length === 0) return { ok: false, message: `No contact matching "${ref.name}".` };
+  return {
+    ok: false,
+    message: `"${ref.name}" matches more than one contact: ${found.map((c) => c.name).join(", ")}. Which one?`
+  };
+}
+async function resolveTask(ref, user) {
+  const found = await Task.find({ ...scope(user), done: false, ...nameFilter("title", ref.name) }).select("title").limit(6).lean();
+  if (found.length === 1) return { ok: true, value: String(found[0]._id) };
+  if (found.length === 0) return { ok: false, message: `No open task matching "${ref.name}".` };
+  return {
+    ok: false,
+    message: `"${ref.name}" matches more than one task: ${found.map((t) => t.title).join(", ")}. Which one?`
+  };
+}
+async function resolveAction(action, user) {
+  switch (action.kind) {
+    case "create_task":
+    case "add_note": {
+      let deal = null;
+      let contact = null;
+      if (action.deal) {
+        const r = await resolveDeal(action.deal, user);
+        if (!r.ok) return r;
+        deal = r.value;
+      }
+      if (action.contact) {
+        const r = await resolveContact(action.contact, user);
+        if (!r.ok) return r;
+        contact = r.value;
+      }
+      if (action.kind === "create_task") {
+        const due = action.dueDate ? resolveDateToken(action.dueDate) : null;
+        return {
+          ok: true,
+          value: {
+            kind: "create_task",
+            title: action.title,
+            deal,
+            contact,
+            dueDate: due ? due.toISOString() : null
+          }
+        };
+      }
+      return { ok: true, value: { kind: "add_note", content: action.content, deal, contact } };
+    }
+    case "move_deal": {
+      const r = await resolveDeal(action.deal, user);
+      if (!r.ok) return r;
+      return { ok: true, value: { kind: "move_deal", deal: r.value, stage: action.stage } };
+    }
+    case "complete_task": {
+      const r = await resolveTask(action.task, user);
+      if (!r.ok) return r;
+      return { ok: true, value: { kind: "complete_task", task: r.value } };
+    }
+  }
+}
+async function runAssistant(message, user) {
+  const clean2 = sanitizeText(message, 1e3);
+  const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  const result = await callStructured({
+    feature: "assistant",
+    schema: assistantPlanLlmSchema,
+    system: buildSystem(today),
+    user: wrapData("message", clean2, { role: user.role }, 1e3),
+    effort: "low",
+    maxTokens: 2048,
+    timeoutMs: 45e3,
+    // Not cached: the same sentence means something different once the records
+    // it refers to have changed.
+    userId: user.id
+  });
+  if (!result.ok) {
+    const ask = await askCrm(clean2, user);
+    if (ask.ok) return { kind: "answer", summary: ask.explanation, ask };
+    return {
+      kind: "refused",
+      reason: result.reason === "not_configured" ? "The assistant needs an AI provider configured. Questions still work through the built-in rules." : `The assistant is temporarily unavailable (${result.reason}).`,
+      details: []
+    };
+  }
+  const validation = validateAssistantPlan(result.data);
+  if (!validation.ok) return { kind: "refused", reason: validation.reason, details: validation.details };
+  const plan = validation.plan;
+  if (plan.intent === "answer") {
+    const ask = await askCrm(clean2, user);
+    if (ask.ok) return { kind: "answer", summary: ask.explanation, ask };
+    return { kind: "refused", reason: ask.reason, details: ask.details };
+  }
+  const steps = [];
+  for (const action of plan.actions) {
+    const resolved = await resolveAction(action, user);
+    if (!resolved.ok) return { kind: "refused", reason: resolved.message, details: [] };
+    steps.push({ description: describeAction(action), action: resolved.value });
+  }
+  return { kind: "proposal", summary: plan.summary, steps };
+}
+async function executeActions(actions, user) {
+  const applied = [];
+  for (const action of actions) {
+    switch (action.kind) {
+      case "create_task": {
+        const { ownerId, contactId } = await ownerFor(action.deal, action.contact, user);
+        const task = await Task.create({
+          title: action.title,
+          deal: action.deal,
+          contact: contactId,
+          owner: ownerId,
+          dueDate: action.dueDate ? new Date(action.dueDate) : null,
+          source: "assistant"
+        });
+        applied.push(`Added task "${task.title}"`);
+        break;
+      }
+      case "add_note": {
+        const { ownerId, contactId } = await ownerFor(action.deal, action.contact, user);
+        await createNote({
+          kind: "note",
+          content: action.content,
+          dealId: action.deal ?? void 0,
+          contactId: contactId ?? void 0,
+          authorId: user.id,
+          ownerId
+        });
+        applied.push("Added a note");
+        break;
+      }
+      case "move_deal": {
+        const deal = await loadDealForUser(action.deal, user);
+        const before = deal.stage;
+        await updateDeal(deal, { stage: action.stage }, user);
+        applied.push(`Moved "${deal.title}" from ${before} to ${action.stage}`);
+        break;
+      }
+      case "complete_task": {
+        const task = await Task.findOne({ _id: action.task, ...scope(user) });
+        if (!task) throw new Error("That task no longer exists.");
+        task.done = true;
+        await task.save();
+        applied.push(`Marked "${task.title}" done`);
+        break;
+      }
+    }
+  }
+  return { applied };
+}
+async function ownerFor(dealId, contactId, user) {
+  if (dealId) {
+    const deal = await loadDealForUser(dealId, user);
+    return { ownerId: String(deal.owner), contactId: contactId ?? String(deal.contact) };
+  }
+  const contact = await loadContactForUser(contactId, user);
+  return { ownerId: String(contact.owner), contactId: String(contact._id) };
+}
+var init_assistant2 = __esm({
+  "src/ai/features/assistant.ts"() {
+    "use strict";
+    init_src();
+    init_models();
+    init_activity();
+    init_contacts();
+    init_deals();
+    init_hash();
+    init_gateway();
+    init_sanitize();
+    init_nlQuery();
+    init_nlQuery();
+  }
+});
+
 // src/middleware/rateLimit.ts
 import { ipKeyGenerator, rateLimit } from "express-rate-limit";
 var keyByUser, aiLimiter, loginLimiter, setupLimiter;
@@ -4937,7 +5482,18 @@ var init_rateLimit = __esm({
 
 // src/routes/ai.ts
 import { Router as Router2 } from "express";
-var aiRouter;
+import { z as zod } from "zod";
+async function record(userId, message, kind, summary, applied = []) {
+  await AssistantExchange.create({
+    owner: userId,
+    message,
+    kind,
+    summary,
+    applied,
+    expiresAt: new Date(Date.now() + HISTORY_TTL_MS)
+  }).catch(() => void 0);
+}
+var aiRouter, HISTORY_TTL_MS, HISTORY_LIMIT, assistantSchema;
 var init_ai = __esm({
   "src/routes/ai.ts"() {
     "use strict";
@@ -4945,12 +5501,14 @@ var init_ai = __esm({
     init_provider2();
     init_semanticSearch();
     init_vectorStore();
+    init_assistant2();
     init_nlQuery();
     init_gateway();
     init_auth();
     init_rateLimit();
     init_validate();
     init_queue();
+    init_models();
     aiRouter = Router2();
     aiRouter.use(requireAuth);
     aiRouter.get("/status", async (_req, res) => {
@@ -4974,6 +5532,37 @@ var init_ai = __esm({
       const q = parsedQuery(res);
       const result = await semanticSearch(q.q, req.user, q.limit);
       res.json(result);
+    });
+    HISTORY_TTL_MS = 30 * 864e5;
+    HISTORY_LIMIT = 50;
+    assistantSchema = zod.object({ message: zod.string().trim().min(1).max(1e3) });
+    aiRouter.post("/assistant", aiLimiter, validateBody(assistantSchema), async (req, res) => {
+      const reply = await runAssistant(req.body.message, req.user);
+      const summary = reply.kind === "refused" ? reply.reason : reply.summary;
+      await record(req.user.id, req.body.message, reply.kind, summary);
+      res.json(reply);
+    });
+    aiRouter.post("/assistant/execute", aiLimiter, validateBody(assistantExecuteSchema), async (req, res) => {
+      const result = await executeActions(req.body.actions, req.user);
+      await record(req.user.id, "(confirmed)", "applied", result.applied.join("; "), result.applied);
+      res.json(result);
+    });
+    aiRouter.get("/assistant/history", async (req, res) => {
+      const rows = await AssistantExchange.find({ owner: req.user.id }).sort({ createdAt: -1 }).limit(HISTORY_LIMIT).lean();
+      res.json({
+        items: rows.map((r) => ({
+          id: String(r._id),
+          message: r.message,
+          kind: r.kind,
+          summary: r.summary,
+          applied: r.applied ?? [],
+          createdAt: r.createdAt.toISOString()
+        }))
+      });
+    });
+    aiRouter.delete("/assistant/history", async (req, res) => {
+      await AssistantExchange.deleteMany({ owner: req.user.id });
+      res.json({ ok: true });
     });
   }
 });
@@ -5280,7 +5869,7 @@ var init_auth2 = __esm({
 });
 
 // src/ai/features/emailDraft.ts
-import { z as z10 } from "zod";
+import { z as z11 } from "zod";
 async function buildContext(p) {
   const parts = [];
   parts.push(
@@ -5399,73 +5988,11 @@ var init_emailDraft = __esm({
     init_gateway();
     init_prompts();
     init_sanitize();
-    emailDraftSchema = z10.object({
-      subject: z10.string(),
-      body: z10.string(),
-      reasoning: z10.string()
+    emailDraftSchema = z11.object({
+      subject: z11.string(),
+      body: z11.string(),
+      reasoning: z11.string()
     });
-  }
-});
-
-// src/services/contacts.ts
-async function createContact(input, user) {
-  const owner = user.role === "admin" ? input.owner ?? user.id : user.id;
-  const contact = await Contact.create({
-    name: input.name,
-    email: clean(input.email) ?? null,
-    phone: clean(input.phone) ?? null,
-    company: clean(input.company) ?? null,
-    tags: input.tags ?? [],
-    notes: clean(input.notes) ?? null,
-    owner,
-    lastActivityAt: /* @__PURE__ */ new Date()
-  });
-  await jobs.dedupeContact(String(contact._id));
-  await jobs.scoreContact(String(contact._id));
-  return contact;
-}
-async function updateContact(contact, input, user) {
-  if (user.role !== "admin" && String(contact.owner) !== user.id) throw forbidden("You can only edit your own contacts");
-  if (input.name !== void 0) contact.name = input.name;
-  if (input.email !== void 0) contact.email = clean(input.email) ?? null;
-  if (input.phone !== void 0) contact.phone = clean(input.phone) ?? null;
-  if (input.company !== void 0) contact.company = clean(input.company) ?? null;
-  if (input.tags !== void 0) contact.tags = input.tags;
-  if (input.notes !== void 0) contact.notes = clean(input.notes) ?? null;
-  if (input.owner && user.role === "admin") contact.owner = input.owner;
-  contact.lastActivityAt = /* @__PURE__ */ new Date();
-  await contact.save();
-  await jobs.dedupeContact(String(contact._id));
-  await jobs.scoreContact(String(contact._id));
-  return contact;
-}
-async function loadContactForUser(id, user) {
-  const contact = await Contact.findById(id);
-  if (!contact || contact.mergedInto) throw notFound("Contact");
-  if (user.role !== "admin" && String(contact.owner) !== user.id) throw notFound("Contact");
-  return contact;
-}
-async function deleteContact(contact) {
-  const notes = await Note.find({ contact: contact._id }).select("_id").lean();
-  await Promise.all([
-    Deal.deleteMany({ contact: contact._id }),
-    Note.deleteMany({ contact: contact._id }),
-    Task.deleteMany({ contact: contact._id }),
-    Meeting.deleteMany({ contact: contact._id }),
-    DuplicateCandidate.deleteMany({ $or: [{ a: contact._id }, { b: contact._id }] })
-  ]);
-  for (const n of notes) await removeNoteEmbedding(String(n._id));
-  await contact.deleteOne();
-}
-var clean;
-var init_contacts = __esm({
-  "src/services/contacts.ts"() {
-    "use strict";
-    init_errors();
-    init_queue();
-    init_models();
-    init_semanticSearch();
-    clean = (v) => v === void 0 ? void 0 : v?.trim() ? v.trim() : null;
   }
 });
 
@@ -5622,20 +6149,20 @@ var init_dashboard = __esm({
     dashboardRouter = Router6();
     dashboardRouter.use(requireAuth);
     dashboardRouter.get("/", async (req, res) => {
-      const scope = req.user.role === "admin" ? {} : { owner: new Types4.ObjectId(req.user.id) };
+      const scope2 = req.user.role === "admin" ? {} : { owner: new Types4.ObjectId(req.user.id) };
       const now = /* @__PURE__ */ new Date();
       const weekAhead = new Date(now.getTime() + 7 * 864e5);
       const [byStage, contacts, atRiskDeals, topDeals, recentNotes, tasksDue, atRiskCount] = await Promise.all([
         Deal.aggregate([
-          { $match: scope },
+          { $match: scope2 },
           { $group: { _id: "$stage", count: { $sum: 1 }, value: { $sum: "$value" } } }
         ]),
-        Contact.countDocuments({ ...scope, mergedInto: null }),
-        Deal.find({ ...scope, "risk.atRisk": true, stage: { $in: OPEN_STAGES } }).sort({ value: -1 }).limit(10).populate("contact", "name company email").populate("owner", "name email role").lean(),
-        Deal.find({ ...scope, stage: { $in: OPEN_STAGES } }).sort({ score: -1, value: -1 }).limit(5).populate("contact", "name company email").populate("owner", "name email role").lean(),
-        Note.find({ ...scope, kind: { $ne: "system" } }).sort({ createdAt: -1 }).limit(8).populate("author", "name email role").lean(),
-        Task.find({ ...scope, done: false, dueDate: { $lte: weekAhead } }).sort({ dueDate: 1 }).limit(10).lean(),
-        Deal.countDocuments({ ...scope, "risk.atRisk": true, stage: { $in: OPEN_STAGES } })
+        Contact.countDocuments({ ...scope2, mergedInto: null }),
+        Deal.find({ ...scope2, "risk.atRisk": true, stage: { $in: OPEN_STAGES } }).sort({ value: -1 }).limit(10).populate("contact", "name company email").populate("owner", "name email role").lean(),
+        Deal.find({ ...scope2, stage: { $in: OPEN_STAGES } }).sort({ score: -1, value: -1 }).limit(5).populate("contact", "name company email").populate("owner", "name email role").lean(),
+        Note.find({ ...scope2, kind: { $ne: "system" } }).sort({ createdAt: -1 }).limit(8).populate("author", "name email role").lean(),
+        Task.find({ ...scope2, done: false, dueDate: { $lte: weekAhead } }).sort({ dueDate: 1 }).limit(10).lean(),
+        Deal.countDocuments({ ...scope2, "risk.atRisk": true, stage: { $in: OPEN_STAGES } })
       ]);
       const stageMap = new Map(byStage.map((s) => [s._id, s]));
       const pipeline = PIPELINE_STAGES.map((stage) => ({
@@ -5659,104 +6186,6 @@ var init_dashboard = __esm({
         tasksDue: tasksDue.map(toTaskDTO)
       });
     });
-  }
-});
-
-// src/services/deals.ts
-function parseDate(value) {
-  if (!value) return null;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-async function createDeal(input, user) {
-  const contact = await Contact.findById(input.contact);
-  if (!contact || contact.mergedInto) throw badRequest("Contact not found");
-  assertCanAccess({ user }, contact.owner);
-  const owner = user.role === "admin" ? input.owner ?? user.id : user.id;
-  const now = /* @__PURE__ */ new Date();
-  const deal = await Deal.create({
-    title: input.title,
-    contact: contact._id,
-    value: input.value,
-    stage: input.stage,
-    owner,
-    expectedCloseDate: parseDate(input.expectedCloseDate),
-    stageEnteredAt: now,
-    stageHistory: [{ stage: input.stage, enteredAt: now }],
-    lastActivityAt: now
-  });
-  await logSystemNote({ dealId: String(deal._id), contactId: String(contact._id), ownerId: owner, authorId: user.id, content: `Deal created in stage ${input.stage}` });
-  await jobs.scoreDeal(String(deal._id));
-  return deal;
-}
-async function updateDeal(deal, input, user) {
-  if (user.role !== "admin" && String(deal.owner) !== user.id) throw forbidden("You can only edit your own deals");
-  const changes = [];
-  if (input.title !== void 0 && input.title !== deal.title) {
-    deal.title = input.title;
-    changes.push("title");
-  }
-  if (input.value !== void 0 && input.value !== deal.value) {
-    changes.push(`value ${deal.value} \u2192 ${input.value}`);
-    deal.value = input.value;
-  }
-  if (input.expectedCloseDate !== void 0) {
-    deal.expectedCloseDate = parseDate(input.expectedCloseDate);
-    changes.push("expected close date");
-  }
-  if (input.contact && String(deal.contact) !== input.contact) {
-    const contact = await Contact.findById(input.contact);
-    if (!contact || contact.mergedInto) throw badRequest("Contact not found");
-    assertCanAccess({ user }, contact.owner);
-    deal.contact = contact._id;
-    changes.push("contact");
-  }
-  if (input.owner && user.role === "admin" && String(deal.owner) !== input.owner) {
-    deal.owner = input.owner;
-    changes.push("owner");
-  }
-  if (input.stage && input.stage !== deal.stage) {
-    const from = deal.stage;
-    const now = /* @__PURE__ */ new Date();
-    deal.stage = input.stage;
-    deal.stageEnteredAt = now;
-    deal.stageHistory.push({ stage: input.stage, enteredAt: now });
-    await deal.save();
-    await logSystemNote({ dealId: String(deal._id), contactId: String(deal.contact), ownerId: String(deal.owner), authorId: user.id, content: `Stage changed from ${from} to ${input.stage}` });
-    changes.push("stage");
-  }
-  if (changes.length) {
-    deal.lastActivityAt = /* @__PURE__ */ new Date();
-    await deal.save();
-    await jobs.scoreDeal(String(deal._id));
-  }
-  return deal;
-}
-async function loadDealForUser(id, user) {
-  const deal = await Deal.findById(id);
-  if (!deal) throw notFound("Deal");
-  if (user.role !== "admin" && String(deal.owner) !== user.id) throw notFound("Deal");
-  return deal;
-}
-async function deleteDeal(deal) {
-  const notes = await Note.find({ deal: deal._id }).select("_id").lean();
-  await Promise.all([
-    Note.deleteMany({ deal: deal._id }),
-    Task.deleteMany({ deal: deal._id }),
-    Meeting.deleteMany({ deal: deal._id })
-  ]);
-  for (const n of notes) await removeNoteEmbedding(String(n._id));
-  await deal.deleteOne();
-}
-var init_deals = __esm({
-  "src/services/deals.ts"() {
-    "use strict";
-    init_auth();
-    init_errors();
-    init_queue();
-    init_models();
-    init_semanticSearch();
-    init_activity();
   }
 });
 
@@ -5945,7 +6374,7 @@ var init_merge = __esm({
 
 // src/routes/duplicates.ts
 import { Router as Router8 } from "express";
-import { z as z11 } from "zod";
+import { z as z12 } from "zod";
 var duplicatesRouter, listQuery;
 var init_duplicates2 = __esm({
   "src/routes/duplicates.ts"() {
@@ -5959,9 +6388,9 @@ var init_duplicates2 = __esm({
     init_serializers();
     duplicatesRouter = Router8();
     duplicatesRouter.use(requireRole("admin"));
-    listQuery = z11.object({
-      status: z11.enum(["pending", "merged", "dismissed", "all"]).default("pending"),
-      limit: z11.coerce.number().int().min(1).max(200).default(50)
+    listQuery = z12.object({
+      status: z12.enum(["pending", "merged", "dismissed", "all"]).default("pending"),
+      limit: z12.coerce.number().int().min(1).max(200).default(50)
     });
     duplicatesRouter.get("/", validateQuery(listQuery), async (_req, res) => {
       const q = parsedQuery(res);
@@ -6027,7 +6456,7 @@ var init_meetings = __esm({
 
 // src/routes/notes.ts
 import { Router as Router10 } from "express";
-import { z as z12 } from "zod";
+import { z as z13 } from "zod";
 var notesRouter, notesQuery;
 var init_notes = __esm({
   "src/routes/notes.ts"() {
@@ -6044,10 +6473,10 @@ var init_notes = __esm({
     init_semanticSearch();
     notesRouter = Router10();
     notesRouter.use(requireAuth);
-    notesQuery = z12.object({
+    notesQuery = z13.object({
       deal: objectIdSchema.optional(),
       contact: objectIdSchema.optional(),
-      limit: z12.coerce.number().int().min(1).max(500).default(100)
+      limit: z13.coerce.number().int().min(1).max(500).default(100)
     });
     notesRouter.get("/", validateQuery(notesQuery), async (req, res) => {
       const q = parsedQuery(res);
@@ -6092,7 +6521,7 @@ var init_notes = __esm({
 
 // src/routes/tasks.ts
 import { Router as Router11 } from "express";
-import { z as z13 } from "zod";
+import { z as z14 } from "zod";
 var tasksRouter, tasksQuery;
 var init_tasks = __esm({
   "src/routes/tasks.ts"() {
@@ -6107,11 +6536,11 @@ var init_tasks = __esm({
     init_serializers();
     tasksRouter = Router11();
     tasksRouter.use(requireAuth);
-    tasksQuery = z13.object({
+    tasksQuery = z14.object({
       deal: objectIdSchema.optional(),
       contact: objectIdSchema.optional(),
-      done: z13.enum(["true", "false"]).optional(),
-      limit: z13.coerce.number().int().min(1).max(500).default(200)
+      done: z14.enum(["true", "false"]).optional(),
+      limit: z14.coerce.number().int().min(1).max(500).default(200)
     });
     tasksRouter.get("/", validateQuery(tasksQuery), async (req, res) => {
       const q = parsedQuery(res);

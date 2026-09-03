@@ -8,7 +8,7 @@ const taskSchema = new Schema(
     owner: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     dueDate: { type: Date, default: null },
     done: { type: Boolean, default: false },
-    source: { type: String, enum: ["manual", "meeting"], default: "manual" },
+    source: { type: String, enum: ["manual", "meeting", "assistant"], default: "manual" },
     meeting: { type: Schema.Types.ObjectId, ref: "Meeting", default: null },
   },
   { timestamps: true },

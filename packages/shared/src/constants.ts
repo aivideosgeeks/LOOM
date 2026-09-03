@@ -22,6 +22,7 @@ export const AI_FEATURES = [
   "semantic_search",
   "duplicate_detection",
   "risk_flagging",
+  "assistant",
 ] as const;
 export type AiFeature = (typeof AI_FEATURES)[number];
 

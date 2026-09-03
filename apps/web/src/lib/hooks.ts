@@ -2,6 +2,8 @@
 
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
 import type {
+  AssistantReply,
+  ResolvedAction,
   AiStatus,
   InviteDTO,
   InvitePreview,
@@ -97,6 +99,7 @@ export const keys = {
   invites: ["invites"] as const,
   setupState: ["setup-state"] as const,
   owned: (id: string) => ["owned", id] as const,
+  assistantHistory: ["assistant-history"] as const,
 };
 
 export function useMe(options: Partial<UseQueryOptions<{ user: UserDTO }>> = {}) {
@@ -433,5 +436,57 @@ export function useRemoveUser() {
   return useMutation({
     mutationFn: (id: string) => api<{ ok: true }>(`/api/auth/users/${id}`, { method: "DELETE" }),
     onSuccess: refresh,
+  });
+}
+
+export interface AssistantHistoryItem {
+  id: string;
+  message: string;
+  kind: "answer" | "proposal" | "refused" | "applied";
+  summary: string;
+  applied: string[];
+  createdAt: string;
+}
+
+/**
+ * Past exchanges, from the server rather than component state, so a reload or a
+ * different device still shows what was asked.
+ */
+export function useAssistantHistory() {
+  return useQuery({
+    queryKey: keys.assistantHistory,
+    queryFn: () => api<{ items: AssistantHistoryItem[] }>("/api/ai/assistant/history"),
+    staleTime: 30_000,
+  });
+}
+
+export function useAssistant() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (message: string) => api<AssistantReply>("/api/ai/assistant", { method: "POST", json: { message } }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.assistantHistory }),
+  });
+}
+
+/** Applies a proposal the user confirmed, then refreshes everything it could have changed. */
+export function useAssistantExecute() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (actions: ResolvedAction[]) =>
+      api<{ applied: string[] }>("/api/ai/assistant/execute", { method: "POST", json: { actions } }),
+    onSuccess: () => {
+      for (const key of ["deals", "deal", "contacts", "contact", "tasks", "dashboard"]) {
+        void qc.invalidateQueries({ queryKey: [key] });
+      }
+      void qc.invalidateQueries({ queryKey: keys.assistantHistory });
+    },
+  });
+}
+
+export function useClearAssistantHistory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api<{ ok: true }>("/api/ai/assistant/history", { method: "DELETE" }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.assistantHistory }),
   });
 }

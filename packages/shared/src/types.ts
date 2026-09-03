@@ -128,7 +128,7 @@ export interface TaskDTO {
   contact: string | null;
   dueDate: string | null;
   done: boolean;
-  source: "manual" | "meeting";
+  source: "manual" | "meeting" | "assistant";
   meeting: string | null;
   createdAt: string;
 }

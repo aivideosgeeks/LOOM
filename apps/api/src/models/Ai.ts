@@ -66,3 +66,31 @@ noteEmbeddingSchema.index({ note: 1, model: 1 }, { unique: true });
 noteEmbeddingSchema.index({ model: 1 });
 
 export const NoteEmbedding = model("NoteEmbedding", noteEmbeddingSchema);
+
+/**
+ * What the assistant was asked and what came back.
+ *
+ * Kept per user so the Ask page can show a thread rather than forgetting every
+ * question the moment it is answered. Only the exchange is stored, never the
+ * rows it returned: those change, and a stale copy would be worse than
+ * re-running the question.
+ *
+ * Trimmed by a TTL index rather than growing forever.
+ */
+const assistantExchangeSchema = new Schema(
+  {
+    owner: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
+    message: { type: String, required: true },
+    kind: { type: String, enum: ["answer", "proposal", "refused", "applied"], required: true },
+    summary: { type: String, default: "" },
+    /** Applied action descriptions, so history shows what actually changed. */
+    applied: { type: [String], default: [] },
+    expiresAt: { type: Date, required: true },
+  },
+  { timestamps: { createdAt: true, updatedAt: false } },
+);
+assistantExchangeSchema.index({ owner: 1, createdAt: -1 });
+assistantExchangeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+
+export type AssistantExchangeDoc = HydratedDocument<InferSchemaType<typeof assistantExchangeSchema>>;
+export const AssistantExchange = model("AssistantExchange", assistantExchangeSchema);
