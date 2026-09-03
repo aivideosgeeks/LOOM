@@ -190,6 +190,15 @@ async function backdate(model: mongoose.Model<any>, id: unknown, fields: Record<
   await model.collection.updateOne({ _id: id as mongoose.Types.ObjectId }, { $set: fields });
 }
 
+/** Backdates many documents in one round trip. createdAt is immutable to Mongoose, hence the raw driver. */
+async function backdateMany(model: mongoose.Model<any>, rows: Array<{ _id: mongoose.Types.ObjectId; createdAt: Date }>) {
+  if (rows.length === 0) return;
+  await model.collection.bulkWrite(
+    rows.map((r) => ({ updateOne: { filter: { _id: r._id }, update: { $set: { createdAt: r.createdAt } } } })),
+    { ordered: false },
+  );
+}
+
 export async function seedDatabase(opts: { reset?: boolean } = {}): Promise<void> {
   if (opts.reset) {
     await Promise.all([
@@ -234,27 +243,45 @@ type Owners = { alice: mongoose.Types.ObjectId; ben: mongoose.Types.ObjectId; ca
 export async function createDemoRecords(owners: Owners, opts: { enrichNotes?: boolean } = {}): Promise<void> {
   const enrichNotes = opts.enrichNotes ?? true;
 
-  const contactIds = new Map<string, mongoose.Types.ObjectId>();
-  for (const c of CONTACTS) {
-    const doc = await Contact.create({
-      name: c.name,
-      email: c.email ?? null,
-      phone: c.phone ?? null,
-      company: c.company ?? null,
-      tags: c.tags ?? [],
-      notes: c.notes ?? null,
-      owner: owners[c.owner],
-      lastActivityAt: daysAgo(c.lastActivityDaysAgo),
-    });
-    await backdate(Contact, doc._id, { createdAt: daysAgo(c.lastActivityDaysAgo + 30) });
-    contactIds.set(c.key, doc._id);
-  }
+  // Written in bulk rather than record by record. The original loop issued
+  // roughly two hundred sequential round trips, which is fine against a local
+  // database and fatal against a hosted one: at 60ms each that alone exceeds a
+  // serverless function's timeout before any work happens.
+  //
+  // Mongoose's insertMany is used rather than the raw driver so defaults and
+  // validation still apply; createdAt is corrected afterwards in one bulkWrite
+  // per collection, because the schema marks it immutable.
+  const contactDocs = CONTACTS.map((c) => ({
+    _id: new mongoose.Types.ObjectId(),
+    name: c.name,
+    email: c.email ?? null,
+    phone: c.phone ?? null,
+    company: c.company ?? null,
+    tags: c.tags ?? [],
+    notes: c.notes ?? null,
+    owner: owners[c.owner],
+    lastActivityAt: daysAgo(c.lastActivityDaysAgo),
+    _createdAt: daysAgo(c.lastActivityDaysAgo + 30),
+    _key: c.key,
+  }));
+  await Contact.insertMany(contactDocs.map(({ _createdAt, _key, ...doc }) => doc));
+  await backdateMany(Contact, contactDocs.map((d) => ({ _id: d._id, createdAt: d._createdAt })));
 
+  const contactIds = new Map<string, mongoose.Types.ObjectId>(contactDocs.map((d) => [d._key, d._id]));
+
+  const dealDocs: Array<Record<string, unknown> & { _id: mongoose.Types.ObjectId; _createdAt: Date }> = [];
+  const noteDocs: Array<Record<string, unknown> & { _id: mongoose.Types.ObjectId; _createdAt: Date }> = [];
+  const taskDocs: Array<Record<string, unknown>> = [];
   let dealForMeeting: mongoose.Types.ObjectId | null = null;
+
   for (const d of DEALS) {
     const contact = contactIds.get(d.contact)!;
     const owner = owners[d.owner];
-    const deal = await Deal.create({
+    const dealId = new mongoose.Types.ObjectId();
+    if (d.title.startsWith("Umbrella")) dealForMeeting = dealId;
+
+    dealDocs.push({
+      _id: dealId,
       title: d.title,
       contact,
       value: d.value,
@@ -267,33 +294,57 @@ export async function createDemoRecords(owners: Owners, opts: { enrichNotes?: bo
         ...(d.stage !== "Lead" ? [{ stage: d.stage, enteredAt: daysAgo(d.stageDaysAgo) }] : []),
       ],
       lastActivityAt: daysAgo(d.activityDaysAgo),
+      _createdAt: daysAgo(d.createdDaysAgo),
     });
-    await backdate(Deal, deal._id, { createdAt: daysAgo(d.createdDaysAgo) });
-    if (d.title.startsWith("Umbrella")) dealForMeeting = deal._id;
 
-    const sys = await Note.create({ kind: "system", content: `Deal created in stage Lead`, deal: deal._id, contact, author: owner, owner, embeddingStatus: "skipped" });
-    await backdate(Note, sys._id, { createdAt: daysAgo(d.createdDaysAgo) });
+    noteDocs.push({
+      _id: new mongoose.Types.ObjectId(),
+      kind: "system",
+      content: "Deal created in stage Lead",
+      deal: dealId,
+      contact,
+      author: owner,
+      owner,
+      embeddingStatus: "skipped",
+      _createdAt: daysAgo(d.createdDaysAgo),
+    });
 
     for (const n of d.notes) {
-      const note = await Note.create({
+      noteDocs.push({
+        _id: new mongoose.Types.ObjectId(),
         kind: n.kind,
         content: n.content,
         contentHash: sha256(n.content),
-        deal: deal._id,
+        deal: dealId,
         contact,
         author: owner,
         owner,
         suspicious: detectInjection(n.content),
         embeddingStatus: "pending",
+        _createdAt: daysAgo(n.daysAgo),
       });
-      await backdate(Note, note._id, { createdAt: daysAgo(n.daysAgo) });
-      if (enrichNotes) await jobs.enrichNote(String(note._id));
     }
+
     for (const t of d.tasks ?? []) {
-      await Task.create({ title: t.title, deal: deal._id, contact, owner, dueDate: t.dueInDays === null ? null : daysAhead(t.dueInDays), done: !!t.done, source: "manual" });
+      taskDocs.push({
+        title: t.title,
+        deal: dealId,
+        contact,
+        owner,
+        dueDate: t.dueInDays === null ? null : daysAhead(t.dueInDays),
+        done: !!t.done,
+        source: "manual",
+      });
     }
-    await jobs.scoreDeal(String(deal._id));
   }
+
+  await Deal.insertMany(dealDocs.map(({ _createdAt, ...doc }) => doc));
+  await backdateMany(Deal, dealDocs.map((d) => ({ _id: d._id, createdAt: d._createdAt })));
+
+  await Note.insertMany(noteDocs.map(({ _createdAt, ...doc }) => doc));
+  await backdateMany(Note, noteDocs.map((d) => ({ _id: d._id, createdAt: d._createdAt })));
+
+  if (taskDocs.length) await Task.insertMany(taskDocs);
 
   if (dealForMeeting) {
     const meeting = await Meeting.create({
@@ -308,16 +359,19 @@ export async function createDemoRecords(owners: Owners, opts: { enrichNotes?: bo
     if (enrichNotes) await jobs.summarizeMeeting(String(meeting._id));
   }
 
-  for (const key of contactIds.keys()) await jobs.dedupeContact(String(contactIds.get(key)));
+  if (enrichNotes) {
+    for (const note of noteDocs) {
+      if (note.kind !== "system") await jobs.enrichNote(String(note._id));
+    }
+  }
+
+  // Two batch passes rather than one job per record. Duplicate detection in
+  // particular is far cheaper run once over everything, since it works from
+  // blocking keys instead of comparing pairs.
+  await jobs.rescoreAll();
+  await jobs.scanDuplicates();
 }
 
-/**
- * Demo records for a live instance, all owned by one real account.
- *
- * The CLI seed invents three users sharing a published password, which is fine
- * on a laptop and unacceptable on a public URL. This assigns everything to the
- * administrator who asked for it instead.
- */
 export async function createDemoRecordsFor(
   ownerId: mongoose.Types.ObjectId,
   opts: { enrichNotes?: boolean } = {},

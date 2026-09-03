@@ -4397,8 +4397,13 @@ __export(seed_exports, {
   seedDatabase: () => seedDatabase
 });
 import bcrypt from "bcryptjs";
-async function backdate(model10, id, fields) {
-  await model10.collection.updateOne({ _id: id }, { $set: fields });
+import mongoose2 from "mongoose";
+async function backdateMany(model10, rows) {
+  if (rows.length === 0) return;
+  await model10.collection.bulkWrite(
+    rows.map((r) => ({ updateOne: { filter: { _id: r._id }, update: { $set: { createdAt: r.createdAt } } } })),
+    { ordered: false }
+  );
 }
 async function seedDatabase(opts = {}) {
   if (opts.reset) {
@@ -4430,26 +4435,33 @@ async function seedDatabase(opts = {}) {
 }
 async function createDemoRecords(owners, opts = {}) {
   const enrichNotes = opts.enrichNotes ?? true;
-  const contactIds = /* @__PURE__ */ new Map();
-  for (const c of CONTACTS) {
-    const doc = await Contact.create({
-      name: c.name,
-      email: c.email ?? null,
-      phone: c.phone ?? null,
-      company: c.company ?? null,
-      tags: c.tags ?? [],
-      notes: c.notes ?? null,
-      owner: owners[c.owner],
-      lastActivityAt: daysAgo2(c.lastActivityDaysAgo)
-    });
-    await backdate(Contact, doc._id, { createdAt: daysAgo2(c.lastActivityDaysAgo + 30) });
-    contactIds.set(c.key, doc._id);
-  }
+  const contactDocs = CONTACTS.map((c) => ({
+    _id: new mongoose2.Types.ObjectId(),
+    name: c.name,
+    email: c.email ?? null,
+    phone: c.phone ?? null,
+    company: c.company ?? null,
+    tags: c.tags ?? [],
+    notes: c.notes ?? null,
+    owner: owners[c.owner],
+    lastActivityAt: daysAgo2(c.lastActivityDaysAgo),
+    _createdAt: daysAgo2(c.lastActivityDaysAgo + 30),
+    _key: c.key
+  }));
+  await Contact.insertMany(contactDocs.map(({ _createdAt, _key, ...doc }) => doc));
+  await backdateMany(Contact, contactDocs.map((d) => ({ _id: d._id, createdAt: d._createdAt })));
+  const contactIds = new Map(contactDocs.map((d) => [d._key, d._id]));
+  const dealDocs = [];
+  const noteDocs = [];
+  const taskDocs = [];
   let dealForMeeting = null;
   for (const d of DEALS) {
     const contact = contactIds.get(d.contact);
     const owner = owners[d.owner];
-    const deal = await Deal.create({
+    const dealId = new mongoose2.Types.ObjectId();
+    if (d.title.startsWith("Umbrella")) dealForMeeting = dealId;
+    dealDocs.push({
+      _id: dealId,
       title: d.title,
       contact,
       value: d.value,
@@ -4461,32 +4473,52 @@ async function createDemoRecords(owners, opts = {}) {
         { stage: "Lead", enteredAt: daysAgo2(d.createdDaysAgo) },
         ...d.stage !== "Lead" ? [{ stage: d.stage, enteredAt: daysAgo2(d.stageDaysAgo) }] : []
       ],
-      lastActivityAt: daysAgo2(d.activityDaysAgo)
+      lastActivityAt: daysAgo2(d.activityDaysAgo),
+      _createdAt: daysAgo2(d.createdDaysAgo)
     });
-    await backdate(Deal, deal._id, { createdAt: daysAgo2(d.createdDaysAgo) });
-    if (d.title.startsWith("Umbrella")) dealForMeeting = deal._id;
-    const sys = await Note.create({ kind: "system", content: `Deal created in stage Lead`, deal: deal._id, contact, author: owner, owner, embeddingStatus: "skipped" });
-    await backdate(Note, sys._id, { createdAt: daysAgo2(d.createdDaysAgo) });
+    noteDocs.push({
+      _id: new mongoose2.Types.ObjectId(),
+      kind: "system",
+      content: "Deal created in stage Lead",
+      deal: dealId,
+      contact,
+      author: owner,
+      owner,
+      embeddingStatus: "skipped",
+      _createdAt: daysAgo2(d.createdDaysAgo)
+    });
     for (const n of d.notes) {
-      const note = await Note.create({
+      noteDocs.push({
+        _id: new mongoose2.Types.ObjectId(),
         kind: n.kind,
         content: n.content,
         contentHash: sha256(n.content),
-        deal: deal._id,
+        deal: dealId,
         contact,
         author: owner,
         owner,
         suspicious: detectInjection(n.content),
-        embeddingStatus: "pending"
+        embeddingStatus: "pending",
+        _createdAt: daysAgo2(n.daysAgo)
       });
-      await backdate(Note, note._id, { createdAt: daysAgo2(n.daysAgo) });
-      if (enrichNotes) await jobs.enrichNote(String(note._id));
     }
     for (const t of d.tasks ?? []) {
-      await Task.create({ title: t.title, deal: deal._id, contact, owner, dueDate: t.dueInDays === null ? null : daysAhead(t.dueInDays), done: !!t.done, source: "manual" });
+      taskDocs.push({
+        title: t.title,
+        deal: dealId,
+        contact,
+        owner,
+        dueDate: t.dueInDays === null ? null : daysAhead(t.dueInDays),
+        done: !!t.done,
+        source: "manual"
+      });
     }
-    await jobs.scoreDeal(String(deal._id));
   }
+  await Deal.insertMany(dealDocs.map(({ _createdAt, ...doc }) => doc));
+  await backdateMany(Deal, dealDocs.map((d) => ({ _id: d._id, createdAt: d._createdAt })));
+  await Note.insertMany(noteDocs.map(({ _createdAt, ...doc }) => doc));
+  await backdateMany(Note, noteDocs.map((d) => ({ _id: d._id, createdAt: d._createdAt })));
+  if (taskDocs.length) await Task.insertMany(taskDocs);
   if (dealForMeeting) {
     const meeting = await Meeting.create({
       title: "Umbrella Health - proposal review call",
@@ -4499,7 +4531,13 @@ async function createDemoRecords(owners, opts = {}) {
     });
     if (enrichNotes) await jobs.summarizeMeeting(String(meeting._id));
   }
-  for (const key of contactIds.keys()) await jobs.dedupeContact(String(contactIds.get(key)));
+  if (enrichNotes) {
+    for (const note of noteDocs) {
+      if (note.kind !== "system") await jobs.enrichNote(String(note._id));
+    }
+  }
+  await jobs.rescoreAll();
+  await jobs.scanDuplicates();
 }
 async function createDemoRecordsFor(ownerId, opts = {}) {
   await createDemoRecords({ alice: ownerId, ben: ownerId, cara: ownerId }, opts);
@@ -4881,8 +4919,19 @@ var init_admin = __esm({
       res.json(getGatewayStatus());
     });
     adminRouter.post("/demo-data", async (req, res) => {
-      if (await Contact.countDocuments() > 0) {
-        throw badRequest("This instance already has contacts. Demo data is only for an empty CRM.");
+      const reset = String(req.query.reset ?? "") === "true";
+      if (reset) {
+        await Promise.all([
+          Contact.deleteMany({}),
+          Deal.deleteMany({}),
+          Note.deleteMany({}),
+          Task.deleteMany({}),
+          Meeting.deleteMany({}),
+          DuplicateCandidate.deleteMany({}),
+          NoteEmbedding.deleteMany({})
+        ]);
+      } else if (await Contact.countDocuments() > 0) {
+        throw badRequest("This instance already has contacts. Add ?reset=true to replace them with the demo set.");
       }
       const queue2 = await getQueue();
       const { createDemoRecordsFor: createDemoRecordsFor2 } = await Promise.resolve().then(() => (init_seed(), seed_exports));

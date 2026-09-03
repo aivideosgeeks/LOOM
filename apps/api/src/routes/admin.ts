@@ -6,7 +6,7 @@ import { badRequest } from "../lib/errors";
 import { requireRole } from "../middleware/auth";
 import { idParam, parsedQuery, validateQuery } from "../middleware/validate";
 import { getQueue, jobs } from "../jobs/queue";
-import { Contact, AiUsage } from "../models";
+import { AiUsage, Contact, Deal, DuplicateCandidate, Meeting, Note, NoteEmbedding, Task } from "../models";
 import { circuit, getGatewayStatus } from "../ai/gateway";
 
 export const adminRouter = Router();
@@ -134,8 +134,22 @@ adminRouter.post("/ai/reset-circuit", (_req, res) => {
  * pending so its summarise button has something to show.
  */
 adminRouter.post("/demo-data", async (req, res) => {
-  if ((await Contact.countDocuments()) > 0) {
-    throw badRequest("This instance already has contacts. Demo data is only for an empty CRM.");
+  // ?reset=true clears CRM records first, which is how a half-finished seed is
+  // recovered. Accounts are never touched: wiping the administrator who is
+  // making the request would lock everyone out.
+  const reset = String(req.query.reset ?? "") === "true";
+  if (reset) {
+    await Promise.all([
+      Contact.deleteMany({}),
+      Deal.deleteMany({}),
+      Note.deleteMany({}),
+      Task.deleteMany({}),
+      Meeting.deleteMany({}),
+      DuplicateCandidate.deleteMany({}),
+      NoteEmbedding.deleteMany({}),
+    ]);
+  } else if ((await Contact.countDocuments()) > 0) {
+    throw badRequest("This instance already has contacts. Add ?reset=true to replace them with the demo set.");
   }
 
   const queue = await getQueue();
