@@ -18,6 +18,11 @@ export async function connectDb(opts: { uri?: string; dbName?: string } = {}): P
   let memory: { stop: () => Promise<boolean> } | null = null;
 
   if (!uri) {
+    if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+      // The in-memory server is not bundled for serverless, and would be wiped
+      // between invocations even if it were. Say so plainly.
+      throw new Error("MONGODB_URI is required on a serverless host. Set it in the project's environment variables.");
+    }
     const { MongoMemoryServer } = await importOptional<typeof import("mongodb-memory-server")>("mongodb-memory-server");
     const server = await MongoMemoryServer.create({ instance: { dbName: opts.dbName ?? "crm" } });
     memory = server;

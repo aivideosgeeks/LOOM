@@ -76,7 +76,13 @@ export type Env = z.infer<typeof envSchema>;
 
 const parsed = envSchema.safeParse(process.env);
 if (!parsed.success) {
+  const detail = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
   console.error("Invalid environment configuration:", parsed.error.issues);
+  // process.exit in a serverless function surfaces only a generic invocation
+  // failure, so throw there and let the handler report what is actually wrong.
+  if (process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME) {
+    throw new Error(`Invalid environment configuration: ${detail}`);
+  }
   process.exit(1);
 }
 
