@@ -29,6 +29,13 @@ const PRICES: Record<string, ModelPrice> = {
   "claude-sonnet-5": { input: 2, output: 10 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },
+  // OpenAI, per published rates after the July 2026 cut. An id not listed here
+  // reports as free rather than guessed at, so add yours if the cost column
+  // reads zero.
+  "gpt-5-nano": { input: 0.05, output: 0.4 },
+  "gpt-4o-mini": { input: 0.15, output: 0.6 },
+  "gpt-4.1-mini": { input: 0.4, output: 1.6 },
+  "gpt-4o": { input: 2.5, output: 10 },
 };
 
 const EMBEDDING_PRICES: Record<string, number> = {
