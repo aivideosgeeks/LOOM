@@ -1,4 +1,5 @@
 import mongoose from "mongoose";
+import { importOptional } from "../lib/optionalImport";
 import { env } from "../config/env";
 import { logger } from "../lib/logger";
 
@@ -17,7 +18,7 @@ export async function connectDb(opts: { uri?: string; dbName?: string } = {}): P
   let memory: { stop: () => Promise<boolean> } | null = null;
 
   if (!uri) {
-    const { MongoMemoryServer } = await import("mongodb-memory-server");
+    const { MongoMemoryServer } = await importOptional<typeof import("mongodb-memory-server")>("mongodb-memory-server");
     const server = await MongoMemoryServer.create({ instance: { dbName: opts.dbName ?? "crm" } });
     memory = server;
     uri = server.getUri();

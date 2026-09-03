@@ -9,6 +9,7 @@ import { adminRouter } from "./routes/admin";
 import { aiRouter } from "./routes/ai";
 import { authRouter } from "./routes/auth";
 import { contactsRouter } from "./routes/contacts";
+import { cronRouter } from "./routes/cron";
 import { dashboardRouter } from "./routes/dashboard";
 import { dealsRouter } from "./routes/deals";
 import { duplicatesRouter } from "./routes/duplicates";
@@ -37,6 +38,7 @@ export function createApp() {
   app.use("/api/duplicates", duplicatesRouter);
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/admin", adminRouter);
+  app.use("/api/cron", cronRouter);
 
   app.use((_req, _res, next) => next(new HttpError(404, "Not found")));
   app.use(errorHandler);

@@ -9,7 +9,10 @@ export async function startJobs() {
   await queue.schedule("risk-daily", "risk.scan", {}, env.RISK_SCAN_CRON);
   await queue.schedule("score-daily", "score.scanAll", {}, "0 5 * * *");
   await queue.schedule("dedupe-nightly", "dedupe.scanAll", {}, "30 5 * * *");
-  if (env.RISK_SCAN_ON_START && !isTest) {
+  // Skipped on the inline adapter: there it would run two whole-collection
+  // scans inside the first request of every cold start. Platform cron calls
+  // /api/cron/daily instead.
+  if (env.RISK_SCAN_ON_START && !isTest && queue.provider !== "inline") {
     await jobs.rescoreAll();
     await jobs.scanRisk();
   }

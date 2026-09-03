@@ -187,7 +187,7 @@ export interface AiStatus {
   consecutiveFailures: number;
   embeddings: { provider: string; model: string; ready: boolean };
   vectorStore: { provider: string; healthy: boolean };
-  queue: { provider: "bullmq" | "memory" };
+  queue: { provider: "bullmq" | "memory" | "inline" };
 }
 
 export interface AiUsageRow {

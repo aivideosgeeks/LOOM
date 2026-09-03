@@ -26,7 +26,7 @@ export interface EnqueueOptions {
 }
 
 export interface JobQueue {
-  readonly provider: "bullmq" | "memory";
+  readonly provider: "bullmq" | "memory" | "inline";
   add<N extends JobName>(name: N, data: JobPayloads[N], opts?: EnqueueOptions): Promise<void>;
   /** Repeatable job. `cron` is a standard 5-field cron expression. */
   schedule<N extends JobName>(schedulerId: string, name: N, data: JobPayloads[N], cron: string): Promise<void>;

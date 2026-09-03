@@ -1,6 +1,7 @@
 import path from "node:path";
 import { env } from "../../config/env";
 import { logger } from "../../lib/logger";
+import { importOptional } from "../../lib/optionalImport";
 import { AiUsage } from "../../models";
 import { estimateEmbeddingCostUsd } from "../costs";
 
@@ -40,7 +41,7 @@ class LocalProvider implements EmbeddingProvider {
       this.loader = (async () => {
         try {
           const started = Date.now();
-          const tf = await import("@huggingface/transformers");
+          const tf = await importOptional<typeof import("@huggingface/transformers")>("@huggingface/transformers");
           tf.env.cacheDir = path.resolve(process.cwd(), env.TRANSFORMERS_CACHE_DIR);
           tf.env.allowLocalModels = true;
           const extractor = await tf.pipeline("feature-extraction", this.model);

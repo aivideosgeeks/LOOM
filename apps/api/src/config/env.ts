@@ -22,6 +22,13 @@ const envSchema = z.object({
 
   MONGODB_URI: z.string().optional(),
   REDIS_URL: z.string().optional(),
+  /**
+   * How background work runs. "auto" picks BullMQ when REDIS_URL is set, the
+   * inline adapter on a serverless host, and the in-process queue otherwise.
+   */
+  QUEUE_PROVIDER: z.enum(["auto", "inline", "memory", "bullmq"]).default("auto"),
+  /** Shared secret for the scheduled-scan routes. Required to enable them. */
+  CRON_SECRET: z.string().optional(),
   SEED_ON_START: bool(true),
 
   JWT_SECRET: z.string().default("dev-only-change-me-please"),
@@ -76,3 +83,8 @@ if (!parsed.success) {
 export const env: Env = parsed.data;
 export const isTest = env.NODE_ENV === "test";
 export const isProd = env.NODE_ENV === "production";
+/**
+ * True on hosts that freeze the process once a response is sent, so nothing
+ * scheduled for "later" ever runs. Vercel and AWS Lambda both set these.
+ */
+export const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);

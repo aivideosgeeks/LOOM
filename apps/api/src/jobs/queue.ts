@@ -1,4 +1,4 @@
-import { env, isTest } from "../config/env";
+import { env, isServerless, isTest } from "../config/env";
 import { logger } from "../lib/logger";
 import type { JobQueue } from "./types";
 
@@ -14,7 +14,12 @@ export async function getQueue(): Promise<JobQueue> {
   if (factory) return factory();
   factory = async () => {
     if (queue) return queue;
-    if (env.REDIS_URL) {
+    if (env.QUEUE_PROVIDER === "inline" || (env.QUEUE_PROVIDER === "auto" && isServerless && !env.REDIS_URL)) {
+      // Serverless: nothing survives the response, so jobs run in-request.
+      const { InlineQueue } = await import("./inlineQueue");
+      queue = new InlineQueue();
+      if (!isTest) logger.info("Job queue: inline (serverless; jobs run on the request path)");
+    } else if (env.REDIS_URL) {
       const { BullQueue } = await import("./bullmqQueue");
       queue = new BullQueue(env.REDIS_URL);
       logger.info("Job queue: BullMQ (Redis)");

@@ -1,14 +1,3 @@
----
-title: LOOM API
-emoji: "🪡"
-colorFrom: indigo
-colorTo: purple
-sdk: docker
-app_port: 7860
-pinned: false
-short_description: Express API for LOOM, an AI-native CRM
----
-
 # LOOM
 
 A CRM where AI is part of the core workflow: every deal gets an explainable lead score, Claude drafts follow-ups from the deal history, meeting transcripts become summaries + tasks + sentiment, you can ask the pipeline questions in plain English, notes are searchable by meaning, likely duplicate contacts land in a review queue, and at-risk deals surface on the dashboard with a written reason.
@@ -183,9 +172,13 @@ See [`.env.example`](.env.example) for every variable with comments.
 
 ## Deployment
 
-The web app deploys to Vercel and the API to Render, because the API needs a
-long-running process for its job queue and embedding model. Next.js rewrites
-`/api/*` to the API server-side, so there is one origin and the session cookie
-stays first-party. Full instructions, including MongoDB Atlas and every
-environment variable, are in [DEPLOY.md](DEPLOY.md); the API service itself is
-described by [`render.yaml`](render.yaml).
+Both halves run on Vercel as two projects from this repository: the Next.js app, and the
+Express API as a serverless function. Next rewrites `/api/*` to the API server-side, so the
+browser sees one origin and the session cookie stays first-party.
+
+Running serverless changes three things, and the app detects the host and adapts: background
+jobs run on the request path instead of a worker, the nightly scans become one daily cron,
+and semantic search needs a hosted embedding key rather than the local model. Full detail,
+including every environment variable and how to get the original behaviour back, is in
+[DEPLOY.md](DEPLOY.md). [`Dockerfile`](Dockerfile) and [`render.yaml`](render.yaml) describe
+the same API on a host with a real process.
