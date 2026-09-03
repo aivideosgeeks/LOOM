@@ -17,5 +17,5 @@
       "@/*": ["src/*"]
     }
   },
-  "include": ["src", "api"]
+  "include": ["src", "serverless"]
 }
