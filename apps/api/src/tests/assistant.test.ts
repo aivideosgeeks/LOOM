@@ -97,3 +97,54 @@ describe("action descriptions", () => {
     expect(text).toContain("…");
   });
 });
+
+describe("assistant intents", () => {
+  it("accepts a new contact and rejects a malformed email", () => {
+    expect(
+      validateAssistantPlan(plan({ actions: [{ kind: "create_contact", name: "Priya Nair", company: "Kestrel", email: "priya@kestrel.io" }] })).ok,
+    ).toBe(true);
+
+    const bad = validateAssistantPlan(plan({ actions: [{ kind: "create_contact", name: "Priya", email: "not-an-address" }] }));
+    expect(bad).toMatchObject({ ok: false });
+    if (!bad.ok) expect(bad.details.join(" ")).toMatch(/not an email/);
+  });
+
+  it("accepts a new deal against a named contact", () => {
+    const result = validateAssistantPlan(
+      plan({ actions: [{ kind: "create_deal", title: "Kestrel pilot", contact: { name: "Priya" }, value: 12000, stage: "Lead" }] }),
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("rejects a deal value that is negative", () => {
+    expect(
+      validateAssistantPlan(plan({ actions: [{ kind: "create_deal", title: "x", contact: { name: "Priya" }, value: -5 }] })).ok,
+    ).toBe(false);
+  });
+
+  it("requires a lookup when asked to show a record", () => {
+    expect(validateAssistantPlan(plan({ intent: "show" }))).toMatchObject({ ok: false });
+    expect(validateAssistantPlan(plan({ intent: "show", lookup: { entity: "contact", name: "Sarah" } })).ok).toBe(true);
+  });
+
+  it("requires steps when explaining how to do something", () => {
+    expect(validateAssistantPlan(plan({ intent: "guide" }))).toMatchObject({ ok: false });
+    expect(validateAssistantPlan(plan({ intent: "guide", guidance: ["Open Admin then Team", "Press Invite"] })).ok).toBe(true);
+  });
+
+  it("refuses to smuggle changes into a non-act intent", () => {
+    for (const intent of ["answer", "show", "guide"]) {
+      const result = validateAssistantPlan(
+        plan({ intent, lookup: { entity: "deal", name: "x" }, guidance: ["x"], actions: [{ kind: "create_contact", name: "Mallory" }] }),
+      );
+      expect(result, intent).toMatchObject({ ok: false });
+    }
+  });
+
+  it("describes the new actions in words", () => {
+    expect(describeAction({ kind: "create_contact", name: "Priya Nair", company: "Kestrel" })).toBe("Add contact Priya Nair at Kestrel");
+    expect(describeAction({ kind: "create_deal", title: "Kestrel pilot", contact: { name: "Priya" } })).toBe(
+      'Create deal "Kestrel pilot" for Priya',
+    );
+  });
+});

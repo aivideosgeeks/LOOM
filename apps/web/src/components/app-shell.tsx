@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { BarChart3, Bot, CircleDot, Contact, Copy, Handshake, LayoutDashboard, ListTodo, LogOut, MessageSquareText, Search, Sparkles, Users } from "lucide-react";
+import { AssistantFab } from "@/components/assistant-fab";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -166,6 +167,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main key={pathname} className="enter flex-1 p-4 md:p-8">
           {children}
         </main>
+        {/* Reachable from every page, since the point is to act on whatever is already open. */}
+        <AssistantFab />
       </div>
     </div>
   );

@@ -35,7 +35,7 @@ const envSchema = z.object({
   JWT_EXPIRES_DAYS: z.coerce.number().default(7),
   COOKIE_SECURE: bool(false),
 
-  AI_PROVIDER: z.enum(["auto", "anthropic", "openrouter", "groq", "custom", "none"]).default("auto"),
+  AI_PROVIDER: z.enum(["auto", "anthropic", "openai", "openrouter", "groq", "custom", "none"]).default("auto"),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENROUTER_API_KEY: z.string().optional(),
   OPENROUTER_MODEL: z.string().default("openrouter/free"),
@@ -57,6 +57,8 @@ const envSchema = z.object({
   VOYAGE_API_KEY: z.string().optional(),
   VOYAGE_MODEL: z.string().default("voyage-3.5-lite"),
   OPENAI_API_KEY: z.string().optional(),
+  /** Chat model, distinct from OPENAI_EMBEDDING_MODEL which serves semantic search. */
+  OPENAI_MODEL: z.string().default("gpt-4o-mini"),
   OPENAI_EMBEDDING_MODEL: z.string().default("text-embedding-3-small"),
   LOCAL_EMBEDDING_MODEL: z.string().default("Xenova/all-MiniLM-L6-v2"),
   TRANSFORMERS_CACHE_DIR: z.string().default(".cache/transformers"),

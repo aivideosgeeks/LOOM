@@ -81,7 +81,7 @@ const assistantExchangeSchema = new Schema(
   {
     owner: { type: Schema.Types.ObjectId, ref: "User", required: true, index: true },
     message: { type: String, required: true },
-    kind: { type: String, enum: ["answer", "proposal", "refused", "applied"], required: true },
+    kind: { type: String, enum: ["answer", "record", "guide", "refused", "applied"], required: true },
     summary: { type: String, default: "" },
     /** Applied action descriptions, so history shows what actually changed. */
     applied: { type: [String], default: [] },

@@ -1,10 +1,10 @@
 import { Router } from "express";
-import { assistantExecuteSchema, askSchema, semanticSearchSchema, type AiStatus } from "@loom/shared";
+import { askSchema, semanticSearchSchema, type AiStatus } from "@loom/shared";
 import type { z } from "zod";
 import { getEmbeddingProvider } from "../ai/embeddings/provider";
 import { semanticSearch } from "../ai/embeddings/semanticSearch";
 import { getVectorStore } from "../ai/embeddings/vectorStore";
-import { executeActions, runAssistant } from "../ai/features/assistant";
+import { runAssistant } from "../ai/features/assistant";
 import { askCrm } from "../ai/features/nlQuery";
 import { getGatewayStatus } from "../ai/gateway";
 import { requireAuth } from "../middleware/auth";
@@ -48,7 +48,14 @@ aiRouter.get("/search", validateQuery(semanticSearchSchema), async (req, res) =>
 const HISTORY_TTL_MS = 30 * 86_400_000;
 const HISTORY_LIMIT = 50;
 
-type ExchangeKind = "answer" | "proposal" | "refused" | "applied";
+type ExchangeKind = "answer" | "record" | "guide" | "refused" | "applied";
+
+/** Reply kinds and history kinds line up one to one; this keeps the mapping explicit. */
+function historyKind(kind: string): ExchangeKind {
+  return (["answer", "record", "guide", "refused", "applied"] as const).includes(kind as ExchangeKind)
+    ? (kind as ExchangeKind)
+    : "refused";
+}
 
 async function record(userId: string, message: string, kind: ExchangeKind, summary: string, applied: string[] = []) {
   await AssistantExchange.create({
@@ -64,23 +71,15 @@ async function record(userId: string, message: string, kind: ExchangeKind, summa
 const assistantSchema = zod.object({ message: zod.string().trim().min(1).max(1000) });
 
 /**
- * The assistant. Answers a question, or proposes changes for confirmation.
- *
- * Nothing here writes to the CRM. A proposal is returned to be confirmed, and
- * only /assistant/execute applies it.
+ * The assistant. Answers questions, opens records, explains the product, and
+ * carries out changes from the allowlist.
  */
 aiRouter.post("/assistant", aiLimiter, validateBody(assistantSchema), async (req, res) => {
   const reply = await runAssistant(req.body.message, req.user!);
   const summary = reply.kind === "refused" ? reply.reason : reply.summary;
-  await record(req.user!.id, req.body.message, reply.kind, summary);
+  const applied = reply.kind === "applied" ? reply.applied : [];
+  await record(req.user!.id, req.body.message, historyKind(reply.kind), summary, applied);
   res.json(reply);
-});
-
-/** Applies actions the user confirmed. Every record is re-checked against their scope. */
-aiRouter.post("/assistant/execute", aiLimiter, validateBody(assistantExecuteSchema), async (req, res) => {
-  const result = await executeActions(req.body.actions, req.user!);
-  await record(req.user!.id, "(confirmed)", "applied", result.applied.join("; "), result.applied);
-  res.json(result);
 });
 
 /** Past exchanges for the signed-in user, newest first. */

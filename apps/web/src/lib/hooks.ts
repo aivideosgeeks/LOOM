@@ -3,7 +3,6 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
 import type {
   AssistantReply,
-  ResolvedAction,
   AiStatus,
   InviteDTO,
   InvitePreview,
@@ -442,7 +441,7 @@ export function useRemoveUser() {
 export interface AssistantHistoryItem {
   id: string;
   message: string;
-  kind: "answer" | "proposal" | "refused" | "applied";
+  kind: "answer" | "record" | "guide" | "refused" | "applied";
   summary: string;
   applied: string[];
   createdAt: string;
@@ -464,21 +463,14 @@ export function useAssistant() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (message: string) => api<AssistantReply>("/api/ai/assistant", { method: "POST", json: { message } }),
-    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.assistantHistory }),
-  });
-}
-
-/** Applies a proposal the user confirmed, then refreshes everything it could have changed. */
-export function useAssistantExecute() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (actions: ResolvedAction[]) =>
-      api<{ applied: string[] }>("/api/ai/assistant/execute", { method: "POST", json: { actions } }),
-    onSuccess: () => {
-      for (const key of ["deals", "deal", "contacts", "contact", "tasks", "dashboard"]) {
-        void qc.invalidateQueries({ queryKey: [key] });
-      }
+    onSuccess: (reply) => {
       void qc.invalidateQueries({ queryKey: keys.assistantHistory });
+      // The assistant writes directly, so anything on screen may now be stale.
+      if (reply.kind === "applied") {
+        for (const key of ["deals", "deal", "contacts", "contact", "tasks", "dashboard"]) {
+          void qc.invalidateQueries({ queryKey: [key] });
+        }
+      }
     },
   });
 }

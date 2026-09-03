@@ -51,7 +51,7 @@ var init_env = __esm({
       JWT_SECRET: z.string().default("dev-only-change-me-please"),
       JWT_EXPIRES_DAYS: z.coerce.number().default(7),
       COOKIE_SECURE: bool(false),
-      AI_PROVIDER: z.enum(["auto", "anthropic", "openrouter", "groq", "custom", "none"]).default("auto"),
+      AI_PROVIDER: z.enum(["auto", "anthropic", "openai", "openrouter", "groq", "custom", "none"]).default("auto"),
       ANTHROPIC_API_KEY: z.string().optional(),
       OPENROUTER_API_KEY: z.string().optional(),
       OPENROUTER_MODEL: z.string().default("openrouter/free"),
@@ -72,6 +72,8 @@ var init_env = __esm({
       VOYAGE_API_KEY: z.string().optional(),
       VOYAGE_MODEL: z.string().default("voyage-3.5-lite"),
       OPENAI_API_KEY: z.string().optional(),
+      /** Chat model, distinct from OPENAI_EMBEDDING_MODEL which serves semantic search. */
+      OPENAI_MODEL: z.string().default("gpt-4o-mini"),
       OPENAI_EMBEDDING_MODEL: z.string().default("text-embedding-3-small"),
       LOCAL_EMBEDDING_MODEL: z.string().default("Xenova/all-MiniLM-L6-v2"),
       TRANSFORMERS_CACHE_DIR: z.string().default(".cache/transformers"),
@@ -859,16 +861,22 @@ function validateAssistantPlan(raw) {
   if (plan.intent === "unsupported") {
     return { ok: false, code: "unsupported", reason: plan.summary, details: [] };
   }
-  if (plan.intent === "answer" && plan.actions.length > 0) {
+  if (plan.intent !== "act" && plan.actions.length > 0) {
     return {
       ok: false,
       code: "invalid",
-      reason: "The assistant marked this as a question but still proposed changes.",
+      reason: "The assistant proposed changes for something that was not a request to change anything.",
       details: []
     };
   }
   if (plan.intent === "act" && plan.actions.length === 0) {
     return { ok: false, code: "invalid", reason: "The assistant proposed no action to take.", details: [] };
+  }
+  if (plan.intent === "show" && !plan.lookup) {
+    return { ok: false, code: "invalid", reason: "The assistant did not say which record to open.", details: [] };
+  }
+  if (plan.intent === "guide" && (!plan.guidance || plan.guidance.length === 0)) {
+    return { ok: false, code: "invalid", reason: "The assistant gave no steps to follow.", details: [] };
   }
   const details = [];
   for (const [i, action] of plan.actions.entries()) {
@@ -877,12 +885,16 @@ function validateAssistantPlan(raw) {
       if (action.dueDate && !isValidDueDate(action.dueDate)) {
         details.push(`${at}.dueDate: "${action.dueDate}" is not a date this system understands`);
       }
-      if (!action.deal && !action.contact) {
-        details.push(`${at}: a task must be attached to a deal or a contact`);
-      }
+      if (!action.deal && !action.contact) details.push(`${at}: a task must be attached to a deal or a contact`);
     }
     if (action.kind === "add_note" && !action.deal && !action.contact) {
       details.push(`${at}: a note must be attached to a deal or a contact`);
+    }
+    if (action.kind === "create_contact" && action.email && !EMAIL_RE.test(action.email)) {
+      details.push(`${at}.email: "${action.email}" is not an email address`);
+    }
+    if (action.kind === "create_deal" && action.expectedCloseDate && !isValidDueDate(action.expectedCloseDate)) {
+      details.push(`${at}.expectedCloseDate: "${action.expectedCloseDate}" is not a date this system understands`);
     }
   }
   if (details.length > 0) {
@@ -890,43 +902,40 @@ function validateAssistantPlan(raw) {
   }
   return { ok: true, plan };
 }
-function describeAction(action) {
-  switch (action.kind) {
-    case "create_task": {
-      const target = action.deal?.name ?? action.contact?.name ?? "";
-      const when = action.dueDate ? `, due ${action.dueDate.replace(/_/g, " ")}` : "";
-      return `Add task "${action.title}" on ${target}${when}`;
-    }
-    case "add_note": {
-      const target = action.deal?.name ?? action.contact?.name ?? "";
-      const preview = action.content.length > 60 ? `${action.content.slice(0, 60)}\u2026` : action.content;
-      return `Add a note to ${target}: "${preview}"`;
-    }
-    case "move_deal":
-      return `Move ${action.deal.name} to ${action.stage}`;
-    case "complete_task":
-      return `Mark "${action.task.name}" as done`;
-  }
-}
-var targetRefSchema, MAX_NOTE_LENGTH, MAX_TASK_TITLE, assistantActionLlmSchema, ASSISTANT_MAX_ACTIONS, assistantPlanLlmSchema, DATE_TOKEN_SET, RELATIVE_RE2, ISO_DATE_RE2, objectId, resolvedActionSchema, assistantExecuteSchema;
+var targetRefSchema, MAX_NOTE_LENGTH, MAX_TASK_TITLE, ASSISTANT_MAX_ACTIONS, assistantActionLlmSchema, ASSISTANT_INTENTS, assistantPlanLlmSchema, DATE_TOKEN_SET, RELATIVE_RE2, ISO_DATE_RE2, EMAIL_RE;
 var init_assistant = __esm({
   "../../packages/shared/src/assistant.ts"() {
     "use strict";
     init_constants();
     init_nlquery();
     targetRefSchema = z4.object({
-      /** Deal title, contact name, or task title, as the user said it. */
       name: z4.string().trim().min(1).max(200)
     });
     MAX_NOTE_LENGTH = 4e3;
     MAX_TASK_TITLE = 300;
+    ASSISTANT_MAX_ACTIONS = 5;
     assistantActionLlmSchema = z4.discriminatedUnion("kind", [
+      z4.object({
+        kind: z4.literal("create_contact"),
+        name: z4.string().trim().min(1).max(200),
+        email: z4.string().trim().max(200).nullish(),
+        phone: z4.string().trim().max(60).nullish(),
+        company: z4.string().trim().max(200).nullish(),
+        tags: z4.array(z4.string().trim().min(1).max(40)).max(8).nullish()
+      }),
+      z4.object({
+        kind: z4.literal("create_deal"),
+        title: z4.string().trim().min(1).max(200),
+        contact: targetRefSchema,
+        value: z4.number().nonnegative().max(1e9).nullish(),
+        stage: z4.enum(PIPELINE_STAGES).nullish(),
+        expectedCloseDate: z4.string().trim().max(40).nullish()
+      }),
       z4.object({
         kind: z4.literal("create_task"),
         title: z4.string().trim().min(1).max(MAX_TASK_TITLE),
         deal: targetRefSchema.nullish(),
         contact: targetRefSchema.nullish(),
-        /** A token from the shared date grammar, an ISO date, or a relative offset like +3d. */
         dueDate: z4.string().trim().max(40).nullish()
       }),
       z4.object({
@@ -945,45 +954,25 @@ var init_assistant = __esm({
         task: targetRefSchema
       })
     ]);
-    ASSISTANT_MAX_ACTIONS = 5;
+    ASSISTANT_INTENTS = ["answer", "act", "show", "guide", "unsupported"];
     assistantPlanLlmSchema = z4.object({
-      /** "answer" when the message is a question, "act" when it asks for a change. */
-      intent: z4.enum(["answer", "act", "unsupported"]),
-      /** One sentence, in the user's own terms, describing what will happen. */
+      /**
+       * answer  - a question about existing records; the CRM runs a validated query
+       * act     - a request to change something; actions are filled in
+       * show    - "open X" / "tell me about X"; lookup is filled in
+       * guide   - "how do I ...?" about using the CRM itself; guidance is filled in
+       */
+      intent: z4.enum(ASSISTANT_INTENTS),
       summary: z4.string().trim().min(1).max(400),
-      actions: z4.array(assistantActionLlmSchema).max(ASSISTANT_MAX_ACTIONS).default([])
+      actions: z4.array(assistantActionLlmSchema).max(ASSISTANT_MAX_ACTIONS).default([]),
+      lookup: z4.object({ entity: z4.enum(["contact", "deal"]), name: z4.string().trim().min(1).max(200) }).nullish(),
+      /** Numbered steps for a how-to. Grounded in the product description given to the model. */
+      guidance: z4.array(z4.string().trim().min(1).max(400)).max(10).nullish()
     });
     DATE_TOKEN_SET = new Set(NL_DATE_TOKENS);
     RELATIVE_RE2 = /^[+-]\d{1,4}[dwmy]$/;
     ISO_DATE_RE2 = /^\d{4}-\d{2}-\d{2}$/;
-    objectId = z4.string().regex(/^[a-f\d]{24}$/i, "not a record id");
-    resolvedActionSchema = z4.discriminatedUnion("kind", [
-      z4.object({
-        kind: z4.literal("create_task"),
-        title: z4.string().trim().min(1).max(MAX_TASK_TITLE),
-        deal: objectId.nullable(),
-        contact: objectId.nullable(),
-        dueDate: z4.string().nullable()
-      }),
-      z4.object({
-        kind: z4.literal("add_note"),
-        content: z4.string().trim().min(1).max(MAX_NOTE_LENGTH),
-        deal: objectId.nullable(),
-        contact: objectId.nullable()
-      }),
-      z4.object({
-        kind: z4.literal("move_deal"),
-        deal: objectId,
-        stage: z4.enum(PIPELINE_STAGES)
-      }),
-      z4.object({
-        kind: z4.literal("complete_task"),
-        task: objectId
-      })
-    ]);
-    assistantExecuteSchema = z4.object({
-      actions: z4.array(resolvedActionSchema).min(1).max(ASSISTANT_MAX_ACTIONS)
-    });
+    EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   }
 });
 
@@ -1628,7 +1617,7 @@ var init_Ai = __esm({
       {
         owner: { type: Schema9.Types.ObjectId, ref: "User", required: true, index: true },
         message: { type: String, required: true },
-        kind: { type: String, enum: ["answer", "proposal", "refused", "applied"], required: true },
+        kind: { type: String, enum: ["answer", "record", "guide", "refused", "applied"], required: true },
         summary: { type: String, default: "" },
         /** Applied action descriptions, so history shows what actually changed. */
         applied: { type: [String], default: [] },
@@ -2238,6 +2227,9 @@ __export(provider_exports, {
 function anthropic() {
   return env.ANTHROPIC_API_KEY ? new AnthropicProvider(env.ANTHROPIC_API_KEY, env.ANTHROPIC_MODEL) : null;
 }
+function openai() {
+  return env.OPENAI_API_KEY ? new OpenAiCompatibleProvider(env.OPENAI_MODEL, env.OPENAI_API_KEY, OPENAI_URL, "openai") : null;
+}
 function openrouter() {
   return env.OPENROUTER_API_KEY ? new OpenAiCompatibleProvider(env.OPENROUTER_MODEL, env.OPENROUTER_API_KEY, OPENROUTER_URL, "openrouter", env.WEB_ORIGIN) : null;
 }
@@ -2251,10 +2243,11 @@ function build() {
   const choice = env.AI_PROVIDER;
   if (choice === "none") return new StubProvider();
   if (choice === "anthropic") return anthropic() ?? new StubProvider();
+  if (choice === "openai") return openai() ?? new StubProvider();
   if (choice === "openrouter") return openrouter() ?? new StubProvider();
   if (choice === "groq") return groq() ?? new StubProvider();
   if (choice === "custom") return custom() ?? new StubProvider();
-  const chain = [anthropic(), openrouter(), groq(), custom()].filter((p) => p !== null);
+  const chain = [anthropic(), openai(), openrouter(), groq(), custom()].filter((p) => p !== null);
   if (chain.length === 0) return new StubProvider();
   if (chain.length === 1) return chain[0];
   return new FallbackProvider(chain);
@@ -2266,7 +2259,7 @@ function getProvider() {
       logger.info({ provider: provider.label ?? provider.name, model: provider.model }, "AI provider selected");
     } else {
       logger.warn(
-        "No AI key configured: features run in fallback mode. Set ANTHROPIC_API_KEY, OPENROUTER_API_KEY or GROQ_API_KEY."
+        "No AI key configured: features run in fallback mode. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY or GROQ_API_KEY."
       );
     }
   }
@@ -2275,7 +2268,7 @@ function getProvider() {
 function setProvider(p) {
   provider = p;
 }
-var provider, OPENROUTER_URL, GROQ_URL;
+var provider, OPENAI_URL, OPENROUTER_URL, GROQ_URL;
 var init_provider = __esm({
   "src/ai/provider/index.ts"() {
     "use strict";
@@ -2287,6 +2280,7 @@ var init_provider = __esm({
     init_stub();
     init_types2();
     provider = null;
+    OPENAI_URL = "https://api.openai.com/v1";
     OPENROUTER_URL = "https://openrouter.ai/api/v1";
     GROQ_URL = "https://api.groq.com/openai/v1";
   }
@@ -5275,30 +5269,41 @@ var init_nlQuery = __esm({
 });
 
 // src/ai/features/assistant.ts
-function buildSystem(today) {
-  return `You are the assistant inside a CRM. You either answer a question about the pipeline, or propose changes for the user to confirm. You never claim to have done something: everything you propose is reviewed by a human first.
+function buildSystem(today, role) {
+  return `You are the assistant built into LOOM, a CRM. You act on the user's behalf and explain how the product works.
 
-Today is ${today}.
+Today is ${today}. The person talking to you is a ${role}.
 
-Decide the intent:
-- "answer" when the message asks about existing records ("which deals are stalling?"). Propose no actions; the CRM answers these itself.
-- "act" when the message asks for a change ("remind me to call Sarah on Friday", "move the Globex deal to Proposal").
-- "unsupported" when it is neither, or asks for something outside the allowed changes. Put the reason in summary.
+Choose one intent:
+- "answer": they are asking about existing records ("which deals are stalling?", "contacts I haven't touched"). Return no actions; the CRM runs a validated query itself.
+- "act": they are asking you to change something. Fill in actions.
+- "show": they want to see one record ("open Sarah Chen", "tell me about the Globex deal"). Fill in lookup.
+- "guide": they are asking how to do something in LOOM. Fill in guidance with short numbered steps, based only on the product description below.
+- "unsupported": anything else, or a change outside the list. Explain why in summary.
 
-The only changes you may propose:
-- create_task: a follow-up. Needs a title and either a deal or a contact.
-- add_note: a note on a deal or a contact.
-- move_deal: change one deal's pipeline stage. Stages: ${PIPELINE_STAGES.join(", ")}.
-- complete_task: mark an existing task done.
+Actions you may take:
+- create_contact: name, and optionally email, phone, company, tags.
+- create_deal: title and the contact it belongs to, optionally value, stage, expectedCloseDate.
+- create_task: title, and either a deal or a contact, optionally dueDate.
+- add_note: content, and either a deal or a contact.
+- move_deal: a deal and its new stage. Stages: ${PIPELINE_STAGES.join(", ")}.
+- complete_task: an existing open task.
 
-Refer to records by the name the user used, in the "name" field. Never invent an
-identifier; the server matches names to records itself. If the user is vague
-about which record they mean, choose "unsupported" and ask which one.
+You cannot delete anything, merge contacts, send email, or change roles. If
+asked, use "unsupported" and say so plainly.
 
-Dates use these forms only: today, tomorrow, start_of_week, end_of_week,
-end_of_month, an offset like +3d or +2w, or an ISO date like 2026-05-04.
+Refer to existing records by the name the user used, in a "name" field. Never
+invent an identifier. If it is unclear which record they mean, use
+"unsupported" and ask which one.
 
-summary is one sentence, in the user's own words, saying what will happen.
+Dates: today, tomorrow, start_of_week, end_of_week, end_of_month, an offset like
++3d or +2w, or an ISO date like 2026-05-04. Nothing else.
+
+summary is one sentence in the user's own terms, written as though the change is
+already made when the intent is "act".
+
+Product description:
+${PRODUCT_GUIDE}
 
 ${UNTRUSTED_DATA_RULES}`;
 }
@@ -5311,11 +5316,8 @@ function nameFilter(field, name) {
 async function resolveDeal(ref, user) {
   const found = await Deal.find({ ...scope(user), ...nameFilter("title", ref.name) }).select("title").limit(6).lean();
   if (found.length === 1) return { ok: true, value: String(found[0]._id) };
-  if (found.length === 0) return { ok: false, message: `No deal matching "${ref.name}".` };
-  return {
-    ok: false,
-    message: `"${ref.name}" matches more than one deal: ${found.map((d) => d.title).join(", ")}. Which one?`
-  };
+  if (found.length === 0) return { ok: false, message: `I could not find a deal matching "${ref.name}".` };
+  return { ok: false, message: `"${ref.name}" matches several deals: ${found.map((d) => d.title).join(", ")}. Which one?` };
 }
 async function resolveContact(ref, user) {
   const found = await Contact.find({
@@ -5323,63 +5325,189 @@ async function resolveContact(ref, user) {
     $or: [nameFilter("name", ref.name), nameFilter("company", ref.name)]
   }).select("name company").limit(6).lean();
   if (found.length === 1) return { ok: true, value: String(found[0]._id) };
-  if (found.length === 0) return { ok: false, message: `No contact matching "${ref.name}".` };
-  return {
-    ok: false,
-    message: `"${ref.name}" matches more than one contact: ${found.map((c) => c.name).join(", ")}. Which one?`
-  };
+  if (found.length === 0) return { ok: false, message: `I could not find a contact matching "${ref.name}".` };
+  return { ok: false, message: `"${ref.name}" matches several contacts: ${found.map((c) => c.name).join(", ")}. Which one?` };
 }
 async function resolveTask(ref, user) {
   const found = await Task.find({ ...scope(user), done: false, ...nameFilter("title", ref.name) }).select("title").limit(6).lean();
   if (found.length === 1) return { ok: true, value: String(found[0]._id) };
-  if (found.length === 0) return { ok: false, message: `No open task matching "${ref.name}".` };
-  return {
-    ok: false,
-    message: `"${ref.name}" matches more than one task: ${found.map((t) => t.title).join(", ")}. Which one?`
-  };
+  if (found.length === 0) return { ok: false, message: `I could not find an open task matching "${ref.name}".` };
+  return { ok: false, message: `"${ref.name}" matches several tasks: ${found.map((t) => t.title).join(", ")}. Which one?` };
 }
-async function resolveAction(action, user) {
+async function ownerFor(dealId, contactId, user) {
+  if (dealId) {
+    const deal = await loadDealForUser(dealId, user);
+    return { ownerId: String(deal.owner), contactId: contactId ?? String(deal.contact) };
+  }
+  const contact = await loadContactForUser(contactId, user);
+  return { ownerId: String(contact.owner), contactId: String(contact._id) };
+}
+async function runAction(action, user) {
   switch (action.kind) {
-    case "create_task":
-    case "add_note": {
-      let deal = null;
-      let contact = null;
+    case "create_contact": {
+      const contact = await createContact(
+        {
+          name: action.name,
+          email: action.email ?? void 0,
+          phone: action.phone ?? void 0,
+          company: action.company ?? void 0,
+          tags: action.tags ?? void 0
+        },
+        user
+      );
+      return {
+        ok: true,
+        value: {
+          done: `Added contact ${contact.name}`,
+          record: { entity: "contact", id: String(contact._id), label: contact.name, sublabel: contact.company ?? void 0 }
+        }
+      };
+    }
+    case "create_deal": {
+      const contactId = await resolveContact(action.contact, user);
+      if (!contactId.ok) return contactId;
+      const close = action.expectedCloseDate ? resolveDateToken(action.expectedCloseDate) : null;
+      const deal = await createDeal(
+        {
+          title: action.title,
+          contact: contactId.value,
+          value: action.value ?? 0,
+          stage: action.stage ?? "Lead",
+          expectedCloseDate: close ? close.toISOString() : void 0
+        },
+        user
+      );
+      return {
+        ok: true,
+        value: {
+          done: `Created deal "${deal.title}"`,
+          record: { entity: "deal", id: String(deal._id), label: deal.title, sublabel: deal.stage }
+        }
+      };
+    }
+    case "create_task": {
+      let dealId = null;
+      let contactId = null;
       if (action.deal) {
         const r = await resolveDeal(action.deal, user);
         if (!r.ok) return r;
-        deal = r.value;
+        dealId = r.value;
       }
       if (action.contact) {
         const r = await resolveContact(action.contact, user);
         if (!r.ok) return r;
-        contact = r.value;
+        contactId = r.value;
       }
-      if (action.kind === "create_task") {
-        const due = action.dueDate ? resolveDateToken(action.dueDate) : null;
-        return {
-          ok: true,
-          value: {
-            kind: "create_task",
-            title: action.title,
-            deal,
-            contact,
-            dueDate: due ? due.toISOString() : null
-          }
-        };
+      const { ownerId, contactId: resolvedContact } = await ownerFor(dealId, contactId, user);
+      const due = action.dueDate ? resolveDateToken(action.dueDate) : null;
+      const task = await Task.create({
+        title: action.title,
+        deal: dealId,
+        contact: resolvedContact ?? null,
+        owner: ownerId,
+        dueDate: due,
+        source: "assistant"
+      });
+      return {
+        ok: true,
+        value: {
+          done: `Added task "${task.title}"${due ? `, due ${due.toDateString()}` : ""}`,
+          record: { entity: "task", id: String(task._id), label: task.title }
+        }
+      };
+    }
+    case "add_note": {
+      let dealId = null;
+      let contactId = null;
+      if (action.deal) {
+        const r = await resolveDeal(action.deal, user);
+        if (!r.ok) return r;
+        dealId = r.value;
       }
-      return { ok: true, value: { kind: "add_note", content: action.content, deal, contact } };
+      if (action.contact) {
+        const r = await resolveContact(action.contact, user);
+        if (!r.ok) return r;
+        contactId = r.value;
+      }
+      const { ownerId, contactId: resolvedContact } = await ownerFor(dealId, contactId, user);
+      await createNote({
+        kind: "note",
+        content: action.content,
+        dealId: dealId ?? void 0,
+        contactId: resolvedContact ?? void 0,
+        authorId: user.id,
+        ownerId
+      });
+      const ref = dealId ? { entity: "deal", id: dealId, label: action.deal?.name ?? "the deal" } : resolvedContact ? { entity: "contact", id: resolvedContact, label: action.contact?.name ?? "the contact" } : void 0;
+      return { ok: true, value: { done: "Added the note", record: ref } };
     }
     case "move_deal": {
       const r = await resolveDeal(action.deal, user);
       if (!r.ok) return r;
-      return { ok: true, value: { kind: "move_deal", deal: r.value, stage: action.stage } };
+      const deal = await loadDealForUser(r.value, user);
+      const before = deal.stage;
+      if (before === action.stage) {
+        return { ok: true, value: { done: `"${deal.title}" was already in ${action.stage}` } };
+      }
+      await updateDeal(deal, { stage: action.stage }, user);
+      return {
+        ok: true,
+        value: {
+          done: `Moved "${deal.title}" from ${before} to ${action.stage}`,
+          record: { entity: "deal", id: String(deal._id), label: deal.title, sublabel: action.stage }
+        }
+      };
     }
     case "complete_task": {
       const r = await resolveTask(action.task, user);
       if (!r.ok) return r;
-      return { ok: true, value: { kind: "complete_task", task: r.value } };
+      const task = await Task.findOne({ _id: r.value, ...scope(user) });
+      if (!task) return { ok: false, message: "That task no longer exists." };
+      task.done = true;
+      await task.save();
+      return { ok: true, value: { done: `Marked "${task.title}" done`, record: { entity: "task", id: String(task._id), label: task.title } } };
     }
   }
+}
+async function loadRecord(entity, name, user) {
+  if (entity === "deal") {
+    const r2 = await resolveDeal({ name }, user);
+    if (!r2.ok) return r2;
+    const deal = await Deal.findById(r2.value).populate("contact", "name company email").populate("owner", "name email role").lean();
+    if (!deal) return { ok: false, message: "That deal no longer exists." };
+    const [notes2, tasks2] = await Promise.all([
+      Note.find({ deal: deal._id }).sort({ createdAt: -1 }).limit(5).populate("author", "name email role").lean(),
+      Task.find({ deal: deal._id, done: false }).sort({ dueDate: 1 }).limit(5).lean()
+    ]);
+    return {
+      ok: true,
+      value: {
+        record: { entity: "deal", id: String(deal._id), label: deal.title, sublabel: deal.stage },
+        detail: { deal: toDealDTO(deal), notes: notes2.map(toNoteDTO), tasks: tasks2.map(toTaskDTO) }
+      }
+    };
+  }
+  const r = await resolveContact({ name }, user);
+  if (!r.ok) return r;
+  const contact = await Contact.findById(r.value).populate("owner", "name email role").lean();
+  if (!contact) return { ok: false, message: "That contact no longer exists." };
+  const [deals, notes, tasks] = await Promise.all([
+    Deal.find({ contact: contact._id }).sort({ updatedAt: -1 }).limit(5).populate("contact", "name company email").populate("owner", "name email role").lean(),
+    Note.find({ contact: contact._id }).sort({ createdAt: -1 }).limit(5).populate("author", "name email role").lean(),
+    Task.find({ contact: contact._id, done: false }).sort({ dueDate: 1 }).limit(5).lean()
+  ]);
+  return {
+    ok: true,
+    value: {
+      record: { entity: "contact", id: String(contact._id), label: contact.name, sublabel: contact.company ?? void 0 },
+      detail: {
+        contact: toContactDTO(contact),
+        deals: deals.map(toDealDTO),
+        notes: notes.map(toNoteDTO),
+        tasks: tasks.map(toTaskDTO)
+      }
+    }
+  };
 }
 async function runAssistant(message, user) {
   const clean2 = sanitizeText(message, 1e3);
@@ -5387,7 +5515,7 @@ async function runAssistant(message, user) {
   const result = await callStructured({
     feature: "assistant",
     schema: assistantPlanLlmSchema,
-    system: buildSystem(today),
+    system: buildSystem(today, user.role),
     user: wrapData("message", clean2, { role: user.role }, 1e3),
     effort: "low",
     maxTokens: 2048,
@@ -5401,83 +5529,43 @@ async function runAssistant(message, user) {
     if (ask.ok) return { kind: "answer", summary: ask.explanation, ask };
     return {
       kind: "refused",
-      reason: result.reason === "not_configured" ? "The assistant needs an AI provider configured. Questions still work through the built-in rules." : `The assistant is temporarily unavailable (${result.reason}).`,
+      reason: result.reason === "not_configured" ? "The assistant needs an AI provider configured. Questions about your pipeline still work without one." : `The assistant is temporarily unavailable (${result.reason}).`,
       details: []
     };
   }
   const validation = validateAssistantPlan(result.data);
   if (!validation.ok) return { kind: "refused", reason: validation.reason, details: validation.details };
   const plan = validation.plan;
+  if (plan.intent === "guide") {
+    return { kind: "guide", summary: plan.summary, steps: plan.guidance ?? [] };
+  }
+  if (plan.intent === "show") {
+    const loaded = await loadRecord(plan.lookup.entity, plan.lookup.name, user);
+    if (!loaded.ok) return { kind: "refused", reason: loaded.message, details: [] };
+    return { kind: "record", summary: plan.summary, record: loaded.value.record, detail: loaded.value.detail };
+  }
   if (plan.intent === "answer") {
     const ask = await askCrm(clean2, user);
     if (ask.ok) return { kind: "answer", summary: ask.explanation, ask };
     return { kind: "refused", reason: ask.reason, details: ask.details };
   }
-  const steps = [];
-  for (const action of plan.actions) {
-    const resolved = await resolveAction(action, user);
-    if (!resolved.ok) return { kind: "refused", reason: resolved.message, details: [] };
-    steps.push({ description: describeAction(action), action: resolved.value });
-  }
-  return { kind: "proposal", summary: plan.summary, steps };
-}
-async function executeActions(actions, user) {
   const applied = [];
-  for (const action of actions) {
-    switch (action.kind) {
-      case "create_task": {
-        const { ownerId, contactId } = await ownerFor(action.deal, action.contact, user);
-        const task = await Task.create({
-          title: action.title,
-          deal: action.deal,
-          contact: contactId,
-          owner: ownerId,
-          dueDate: action.dueDate ? new Date(action.dueDate) : null,
-          source: "assistant"
-        });
-        applied.push(`Added task "${task.title}"`);
-        break;
-      }
-      case "add_note": {
-        const { ownerId, contactId } = await ownerFor(action.deal, action.contact, user);
-        await createNote({
-          kind: "note",
-          content: action.content,
-          dealId: action.deal ?? void 0,
-          contactId: contactId ?? void 0,
-          authorId: user.id,
-          ownerId
-        });
-        applied.push("Added a note");
-        break;
-      }
-      case "move_deal": {
-        const deal = await loadDealForUser(action.deal, user);
-        const before = deal.stage;
-        await updateDeal(deal, { stage: action.stage }, user);
-        applied.push(`Moved "${deal.title}" from ${before} to ${action.stage}`);
-        break;
-      }
-      case "complete_task": {
-        const task = await Task.findOne({ _id: action.task, ...scope(user) });
-        if (!task) throw new Error("That task no longer exists.");
-        task.done = true;
-        await task.save();
-        applied.push(`Marked "${task.title}" done`);
-        break;
-      }
+  const records = [];
+  for (const action of plan.actions) {
+    const outcome = await runAction(action, user);
+    if (!outcome.ok) {
+      return {
+        kind: "refused",
+        reason: outcome.message,
+        details: applied.length ? [`Already done: ${applied.join("; ")}`] : []
+      };
     }
+    applied.push(outcome.value.done);
+    if (outcome.value.record) records.push(outcome.value.record);
   }
-  return { applied };
+  return { kind: "applied", summary: plan.summary, applied, records };
 }
-async function ownerFor(dealId, contactId, user) {
-  if (dealId) {
-    const deal = await loadDealForUser(dealId, user);
-    return { ownerId: String(deal.owner), contactId: contactId ?? String(deal.contact) };
-  }
-  const contact = await loadContactForUser(contactId, user);
-  return { ownerId: String(contact.owner), contactId: String(contact._id) };
-}
+var PRODUCT_GUIDE;
 var init_assistant2 = __esm({
   "src/ai/features/assistant.ts"() {
     "use strict";
@@ -5486,11 +5574,35 @@ var init_assistant2 = __esm({
     init_activity();
     init_contacts();
     init_deals();
-    init_hash();
+    init_serializers();
     init_gateway();
     init_sanitize();
     init_nlQuery();
-    init_nlQuery();
+    PRODUCT_GUIDE = `LOOM is a CRM. What it contains and how people use it:
+
+Contacts: people and the companies they work for. Contacts page, "New contact".
+  Each has a lead score with a breakdown you see by hovering the score dial.
+Deals: opportunities attached to a contact, moving through stages
+  ${PIPELINE_STAGES.join(" -> ")}. Deals page, "New deal". Open a deal to see its
+  timeline, notes, tasks and risk flag. Drag or use the stage control to move it.
+Notes: the timeline on a contact or deal. Sentiment is classified automatically
+  and feeds the lead score.
+Tasks: follow-ups attached to a deal or contact, with an optional due date.
+  Tasks page, or the task box on a deal.
+Meetings: paste a transcript on a deal and press Summarize; it produces a
+  summary, action items that become tasks, sentiment, and next steps.
+Ask your CRM: this assistant.
+Semantic search: finds notes by meaning rather than keyword.
+Duplicates (admin): likely duplicate contacts, reviewed and merged by hand. The
+  CRM never merges automatically.
+AI usage (admin): tokens, cost and latency for every AI call.
+Team (admin): invite people by email. There is no public sign-up; an invite link
+  is single-use and expires after seven days. Roles are admin and member.
+  Admins see everything; members see only records they own.
+Lead score: stage, recency, value, stage velocity, note sentiment and
+  engagement, combined into 0-100. Won is 100, Lost is 0.
+Risk flags: a deal stalls in a stage, goes quiet, turns negative in sentiment,
+  or has a close date that no longer looks real.`;
   }
 });
 
@@ -5532,6 +5644,9 @@ var init_rateLimit = __esm({
 // src/routes/ai.ts
 import { Router as Router2 } from "express";
 import { z as zod } from "zod";
+function historyKind(kind) {
+  return ["answer", "record", "guide", "refused", "applied"].includes(kind) ? kind : "refused";
+}
 async function record(userId, message, kind, summary, applied = []) {
   await AssistantExchange.create({
     owner: userId,
@@ -5588,13 +5703,9 @@ var init_ai = __esm({
     aiRouter.post("/assistant", aiLimiter, validateBody(assistantSchema), async (req, res) => {
       const reply = await runAssistant(req.body.message, req.user);
       const summary = reply.kind === "refused" ? reply.reason : reply.summary;
-      await record(req.user.id, req.body.message, reply.kind, summary);
+      const applied = reply.kind === "applied" ? reply.applied : [];
+      await record(req.user.id, req.body.message, historyKind(reply.kind), summary, applied);
       res.json(reply);
-    });
-    aiRouter.post("/assistant/execute", aiLimiter, validateBody(assistantExecuteSchema), async (req, res) => {
-      const result = await executeActions(req.body.actions, req.user);
-      await record(req.user.id, "(confirmed)", "applied", result.applied.join("; "), result.applied);
-      res.json(result);
     });
     aiRouter.get("/assistant/history", async (req, res) => {
       const rows = await AssistantExchange.find({ owner: req.user.id }).sort({ createdAt: -1 }).limit(HISTORY_LIMIT).lean();

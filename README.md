@@ -97,6 +97,7 @@ packages/shared Zod request schemas, DTO types and the NL-query DSL + validator 
 | Lead scoring | Sentiment per note classified by Claude, cached 30 days | Keyword lexicon sentiment; score model unchanged |
 | Email drafting | Personalised draft from contact, deal, last 8 notes, open tasks, latest meeting summary | Stage-based template, clearly labelled |
 | Ask your CRM | Question → validated DSL → table | Rule-based translator for common questions; otherwise a clear "unavailable" |
+| Assistant | Adds contacts, deals, tasks and notes, moves deals, opens records, explains the product | Questions still answered by the rule-based translator; changes need a model |
 | Meeting summary | Summary, action items (→ tasks), sentiment (→ score), next steps, topics | Extractive summary + commitment-phrase action items, labelled "basic extraction" |
 | Semantic search | Embeddings (Voyage / OpenAI / local) + vector store | MongoDB `$text` search, response says `mode: "text"` and why |
 | Duplicate detection | Rule-based candidates + Claude verdict with reason | Rule-based candidates only |

@@ -8,6 +8,7 @@ import type { LlmProvider } from "./types";
 
 let provider: LlmProvider | null = null;
 
+const OPENAI_URL = "https://api.openai.com/v1";
 const OPENROUTER_URL = "https://openrouter.ai/api/v1";
 const GROQ_URL = "https://api.groq.com/openai/v1";
 
@@ -21,6 +22,11 @@ const GROQ_URL = "https://api.groq.com/openai/v1";
  */
 function anthropic(): LlmProvider | null {
   return env.ANTHROPIC_API_KEY ? new AnthropicProvider(env.ANTHROPIC_API_KEY, env.ANTHROPIC_MODEL) : null;
+}
+function openai(): LlmProvider | null {
+  return env.OPENAI_API_KEY
+    ? new OpenAiCompatibleProvider(env.OPENAI_MODEL, env.OPENAI_API_KEY, OPENAI_URL, "openai")
+    : null;
 }
 function openrouter(): LlmProvider | null {
   return env.OPENROUTER_API_KEY
@@ -44,6 +50,7 @@ function build(): LlmProvider {
   // Naming a provider pins it: a deployment that says groq should fail as groq
   // rather than quietly answer as something else.
   if (choice === "anthropic") return anthropic() ?? new StubProvider();
+  if (choice === "openai") return openai() ?? new StubProvider();
   if (choice === "openrouter") return openrouter() ?? new StubProvider();
   if (choice === "groq") return groq() ?? new StubProvider();
   if (choice === "custom") return custom() ?? new StubProvider();
@@ -51,7 +58,7 @@ function build(): LlmProvider {
   // Auto: use every key present, best first. Free tiers retire models and run
   // out of daily allowance, and a second key answers perfectly well when the
   // first one does either.
-  const chain = [anthropic(), openrouter(), groq(), custom()].filter((p): p is LlmProvider => p !== null);
+  const chain = [anthropic(), openai(), openrouter(), groq(), custom()].filter((p): p is LlmProvider => p !== null);
   if (chain.length === 0) return new StubProvider();
   if (chain.length === 1) return chain[0]!;
   return new FallbackProvider(chain);
@@ -64,7 +71,7 @@ export function getProvider(): LlmProvider {
       logger.info({ provider: provider.label ?? provider.name, model: provider.model }, "AI provider selected");
     } else {
       logger.warn(
-        "No AI key configured: features run in fallback mode. Set ANTHROPIC_API_KEY, OPENROUTER_API_KEY or GROQ_API_KEY.",
+        "No AI key configured: features run in fallback mode. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY or GROQ_API_KEY.",
       );
     }
   }
