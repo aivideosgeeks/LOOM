@@ -216,7 +216,23 @@ export async function seedDatabase(opts: { reset?: boolean } = {}): Promise<void
     { name: "Ben Member", email: "ben@crm.dev", passwordHash, role: "member" },
     { name: "Cara Sales", email: "cara@crm.dev", passwordHash, role: "member" },
   ]);
-  const owners = { alice: alice._id, ben: ben._id, cara: cara._id };
+
+  await createDemoRecords({ alice: alice._id, ben: ben._id, cara: cara._id });
+  logger.info({ users: 3, contacts: CONTACTS.length, deals: DEALS.length }, `Seeded demo data. Logins: admin@crm.dev / ben@crm.dev / cara@crm.dev (password: ${SEED_PASSWORD})`);
+}
+
+type Owners = { alice: mongoose.Types.ObjectId; ben: mongoose.Types.ObjectId; cara: mongoose.Types.ObjectId };
+
+/**
+ * Loads the demo contacts, deals, notes, tasks and meeting for a set of owners.
+ *
+ * `enrichNotes` is off for live deployments. Note enrichment classifies
+ * sentiment through the model, one call per note, and on a serverless host
+ * those run on the request path where forty of them would exceed the function
+ * timeout. Scoring and duplicate detection are deterministic and stay on.
+ */
+export async function createDemoRecords(owners: Owners, opts: { enrichNotes?: boolean } = {}): Promise<void> {
+  const enrichNotes = opts.enrichNotes ?? true;
 
   const contactIds = new Map<string, mongoose.Types.ObjectId>();
   for (const c of CONTACTS) {
@@ -271,7 +287,7 @@ export async function seedDatabase(opts: { reset?: boolean } = {}): Promise<void
         embeddingStatus: "pending",
       });
       await backdate(Note, note._id, { createdAt: daysAgo(n.daysAgo) });
-      await jobs.enrichNote(String(note._id));
+      if (enrichNotes) await jobs.enrichNote(String(note._id));
     }
     for (const t of d.tasks ?? []) {
       await Task.create({ title: t.title, deal: deal._id, contact, owner, dueDate: t.dueInDays === null ? null : daysAhead(t.dueInDays), done: !!t.done, source: "manual" });
@@ -289,12 +305,25 @@ export async function seedDatabase(opts: { reset?: boolean } = {}): Promise<void
       transcript: SAMPLE_TRANSCRIPT,
       status: "pending",
     });
-    await jobs.summarizeMeeting(String(meeting._id));
+    if (enrichNotes) await jobs.summarizeMeeting(String(meeting._id));
   }
 
   for (const key of contactIds.keys()) await jobs.dedupeContact(String(contactIds.get(key)));
+}
 
-  logger.info({ users: 3, contacts: CONTACTS.length, deals: DEALS.length }, `Seeded demo data. Logins: admin@crm.dev / ben@crm.dev / cara@crm.dev (password: ${SEED_PASSWORD})`);
+/**
+ * Demo records for a live instance, all owned by one real account.
+ *
+ * The CLI seed invents three users sharing a published password, which is fine
+ * on a laptop and unacceptable on a public URL. This assigns everything to the
+ * administrator who asked for it instead.
+ */
+export async function createDemoRecordsFor(
+  ownerId: mongoose.Types.ObjectId,
+  opts: { enrichNotes?: boolean } = {},
+): Promise<{ contacts: number; deals: number }> {
+  await createDemoRecords({ alice: ownerId, ben: ownerId, cara: ownerId }, opts);
+  return { contacts: CONTACTS.length, deals: DEALS.length };
 }
 
 const isDirectRun = process.argv[1] && /seed\.(ts|js)$/.test(process.argv[1]);

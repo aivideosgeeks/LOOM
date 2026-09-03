@@ -1,11 +1,12 @@
 import { Router } from "express";
+import { Types } from "mongoose";
 import { z } from "zod";
 import { AI_FEATURES, type AiFeature, type AiUsageRow } from "@loom/shared";
 import { badRequest } from "../lib/errors";
 import { requireRole } from "../middleware/auth";
 import { idParam, parsedQuery, validateQuery } from "../middleware/validate";
-import { jobs } from "../jobs/queue";
-import { AiUsage } from "../models";
+import { getQueue, jobs } from "../jobs/queue";
+import { Contact, AiUsage } from "../models";
 import { circuit, getGatewayStatus } from "../ai/gateway";
 
 export const adminRouter = Router();
@@ -116,4 +117,32 @@ adminRouter.post("/jobs/:name", async (req, res) => {
 adminRouter.post("/ai/reset-circuit", (_req, res) => {
   circuit.reset();
   res.json(getGatewayStatus());
+});
+
+/**
+ * Loads the demo dataset into a live instance, owned by the administrator who
+ * asks for it.
+ *
+ * The CLI seed is not usable here: it invents three accounts sharing a password
+ * published in the repository, which on a public URL is an open door. This
+ * creates only records.
+ *
+ * Refuses when contacts already exist, so a second click cannot quietly double
+ * everything. Note sentiment and the meeting summary are left for the model to
+ * do on demand, because on a serverless host they would run on this request and
+ * forty model calls do not fit in the function timeout. The meeting is created
+ * pending so its summarise button has something to show.
+ */
+adminRouter.post("/demo-data", async (req, res) => {
+  if ((await Contact.countDocuments()) > 0) {
+    throw badRequest("This instance already has contacts. Demo data is only for an empty CRM.");
+  }
+
+  const queue = await getQueue();
+  const { createDemoRecordsFor } = await import("../scripts/seed");
+  const counts = await createDemoRecordsFor(new Types.ObjectId(req.user!.id), {
+    enrichNotes: queue.provider !== "inline",
+  });
+
+  res.status(201).json({ ...counts, enriched: queue.provider !== "inline" });
 });

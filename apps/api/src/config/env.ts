@@ -38,7 +38,7 @@ const envSchema = z.object({
   AI_PROVIDER: z.enum(["auto", "anthropic", "openrouter", "groq", "custom", "none"]).default("auto"),
   ANTHROPIC_API_KEY: z.string().optional(),
   OPENROUTER_API_KEY: z.string().optional(),
-  OPENROUTER_MODEL: z.string().default("deepseek/deepseek-chat-v3.1:free"),
+  OPENROUTER_MODEL: z.string().default("openrouter/free"),
   GROQ_API_KEY: z.string().optional(),
   GROQ_MODEL: z.string().default("llama-3.3-70b-versatile"),
   /** For any other OpenAI-compatible gateway (Together, Ollama, OpenAI itself). */
