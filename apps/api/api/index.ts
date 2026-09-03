@@ -1,9 +1,4 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createApp } from "../src/app";
-import { getProvider } from "../src/ai/provider";
-import { connectDb } from "../src/db/connect";
-import { startJobs } from "../src/jobs";
-import { logger } from "../src/lib/logger";
 
 /**
  * Serverless entry point for the API.
@@ -16,6 +11,12 @@ import { logger } from "../src/lib/logger";
  *
  * Every path is rewritten to this single function by vercel.json, which keeps
  * the original URL intact so the Express routers match unchanged.
+ *
+ * Nothing is imported at module scope on purpose. A throw while the module
+ * graph loads happens before any handler exists, so the platform can only
+ * report a generic invocation failure with no cause attached. Loading the app
+ * inside the try below turns that same failure into a readable response and a
+ * logged stack.
  */
 
 type NodeHandler = (req: IncomingMessage, res: ServerResponse) => void;
@@ -23,6 +24,14 @@ type NodeHandler = (req: IncomingMessage, res: ServerResponse) => void;
 let booting: Promise<NodeHandler> | null = null;
 
 async function boot(): Promise<NodeHandler> {
+  const [{ createApp }, { getProvider }, { connectDb }, { startJobs }, { logger }] = await Promise.all([
+    import("../src/app"),
+    import("../src/ai/provider"),
+    import("../src/db/connect"),
+    import("../src/jobs"),
+    import("../src/lib/logger"),
+  ]);
+
   await connectDb();
   getProvider();
 
@@ -32,12 +41,6 @@ async function boot(): Promise<NodeHandler> {
 
   logger.info("API ready (serverless)");
   return createApp() as unknown as NodeHandler;
-}
-
-function fail(res: ServerResponse, status: number, message: string) {
-  res.statusCode = status;
-  res.setHeader("content-type", "application/json");
-  res.end(JSON.stringify({ error: message }));
 }
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
@@ -50,10 +53,19 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     // A failed boot must not stay cached, or one transient database error would
     // poison the container for the rest of its life.
     booting = null;
-    const message = err instanceof Error ? err.message : "Unknown startup error";
-    logger.error({ err }, "Serverless boot failed");
-    // Reported rather than rethrown: an uncaught error here shows up only as a
-    // generic invocation failure, which says nothing about the cause.
-    fail(res, 503, message);
+
+    const error = err instanceof Error ? err : new Error(String(err));
+    console.error("Serverless boot failed:", error.stack ?? error.message);
+
+    res.statusCode = 503;
+    res.setHeader("content-type", "application/json");
+    res.end(
+      JSON.stringify({
+        error: "API failed to start",
+        // Without this the platform reports only FUNCTION_INVOCATION_FAILED,
+        // which says nothing about which variable or module is at fault.
+        detail: error.message,
+      }),
+    );
   }
 }
