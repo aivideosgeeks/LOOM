@@ -380,6 +380,68 @@
   opacity: 0.7;
 }
 
+/*
+ * The assistant beacon.
+ *
+ * It is the only control present on every screen, and it sits over whatever the
+ * page is showing, so it has to read as deliberate rather than dropped on top.
+ * A halo of the signal colour separates it from the dark ground without a hard
+ * edge, and breathes slowly enough to catch the eye once rather than nag.
+ */
+.beacon {
+  /*
+   * No position here on purpose. This class sits after Tailwind's utilities, so
+   * declaring one would beat the `fixed` on the element and drop the button back
+   * into the document flow. `isolation` alone gives the halo below a stacking
+   * context to sit in, and the element's own positioning does the rest.
+   */
+  isolation: isolate;
+}
+.beacon::before {
+  content: "";
+  position: absolute;
+  inset: -45%;
+  z-index: -1;
+  border-radius: 999px;
+  background: radial-gradient(
+    closest-side,
+    color-mix(in oklab, var(--signal) 60%, transparent),
+    transparent 72%
+  );
+  opacity: 0.4;
+  animation: beacon-breathe 6s ease-in-out infinite;
+  pointer-events: none;
+}
+.beacon:hover::before {
+  opacity: 0.85;
+}
+/* The thread of light the cards use on hover, wrapped around a pill. */
+.beacon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(120deg, transparent 30%, color-mix(in oklab, white 45%, transparent), transparent 70%);
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+}
+.beacon:hover::after {
+  opacity: 0.35;
+}
+
+@keyframes beacon-breathe {
+  0%,
+  100% {
+    opacity: 0.32;
+    transform: scale(0.95);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.05);
+  }
+}
+
 /* A single light sweep across a surface, for the one or two places worth it. */
 .sheen {
   position: relative;
@@ -448,6 +510,7 @@
   .nav-mark::before,
   .task-exit,
   .sheen:hover::before,
+  .beacon::before,
   body::after {
     animation: none;
   }
