@@ -1,0 +1,23 @@
+# Keep the build context small. Anything the API does not run at runtime stays out.
+.git
+.gitignore
+node_modules
+**/node_modules
+
+# The web app is built and served by Vercel, not by this image.
+apps/web/.next
+apps/web/out
+
+# Handbook and test-report PDFs are about 15 MB and are documentation only.
+docs
+e2e/screenshots
+e2e/shots
+
+# Local secrets must never reach the image; Spaces inject these as secrets.
+.env
+.env.*
+!.env.example
+
+.cache
+**/.cache
+*.log

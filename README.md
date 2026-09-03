@@ -1,3 +1,14 @@
+---
+title: LOOM API
+emoji: "🪡"
+colorFrom: indigo
+colorTo: purple
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Express API for LOOM, an AI-native CRM
+---
+
 # LOOM
 
 A CRM where AI is part of the core workflow: every deal gets an explainable lead score, Claude drafts follow-ups from the deal history, meeting transcripts become summaries + tasks + sentiment, you can ask the pipeline questions in plain English, notes are searchable by meaning, likely duplicate contacts land in a review queue, and at-risk deals surface on the dashboard with a written reason.
