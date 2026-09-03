@@ -1,0 +1,6 @@
+This directory exists only to satisfy Vercel.
+
+Setting a buildCommand on a non-framework project makes Vercel require a static
+output directory, even for a deployment that is nothing but serverless
+functions. Everything is rewritten to /api by vercel.json, so nothing is ever
+served from here.

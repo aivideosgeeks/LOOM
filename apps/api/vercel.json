@@ -19,5 +19,6 @@
       "schedule": "0 5 * * *"
     }
   ],
-  "buildCommand": "npm run build:serverless || echo 'build:serverless unavailable; deploying the committed bundle'"
+  "buildCommand": "npm run build:serverless || echo 'build:serverless unavailable; deploying the committed bundle'",
+  "outputDirectory": "public"
 }
