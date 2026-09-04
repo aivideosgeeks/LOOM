@@ -1,4 +1,4 @@
-import type { ContactDTO, DealDTO, DuplicateCandidateDTO, MeetingDTO, NoteDTO, TaskDTO, UserDTO } from "@loom/shared";
+import type { IntegrationPlatform, ContactDTO, DealDTO, DuplicateCandidateDTO, MeetingDTO, NoteDTO, TaskDTO, UserDTO } from "@loom/shared";
 import { toIso } from "../lib/dates";
 
 type AnyDoc = Record<string, any>;
@@ -40,6 +40,12 @@ export function toContactDTO(doc: AnyDoc, extra: Partial<ContactDTO> = {}): Cont
     lastActivityAt: toIso(c.lastActivityAt) ?? toIso(c.createdAt) ?? new Date().toISOString(),
     createdAt: toIso(c.createdAt) ?? "",
     updatedAt: toIso(c.updatedAt) ?? "",
+    // Platform and handle only. The external id is a routing identifier and has
+    // no business leaving the server.
+    externalRefs: (c.externalRefs ?? []).map((r: { platform: string; handle?: string | null }) => ({
+      platform: r.platform as IntegrationPlatform,
+      handle: r.handle ?? null,
+    })),
     ...extra,
   };
 }

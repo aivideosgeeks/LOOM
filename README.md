@@ -66,6 +66,29 @@ link is emailed; without it the app shows the link so you can pass it on yoursel
 strip the last administrator, to let you demote or delete yourself, or to remove anyone who still
 owns records, so nothing is silently orphaned.
 
+## Integrations
+
+Instagram, Facebook and TikTok connect from **Admin → Integrations**. Leads and messages
+become Contacts and Deals, and every piece of inbound text becomes a Note, so it inherits
+the same sentiment classification, embedding and lead scoring as anything typed by hand.
+Nothing in the integration layer scores or embeds on its own.
+
+One ingestion path serves both webhooks and polling, so a lead arriving by either route
+resolves to one Contact. Idempotency is a unique index on `(platform, eventId)`: both
+platforms retry on any non-2xx, and Meta resends after a timeout even when the first
+attempt succeeded, so the webhook route answers 200 once the signature verifies and leaves
+failures to a retry job. TikTok's webhook tier is unreliable, so polling runs regardless
+and the sync log records which route carried each event.
+
+Access tokens are sealed with AES-256-GCM and never leave the server; the API returns a
+fingerprint. Signatures are checked against the raw request bytes, since re-serialising the
+parsed body breaks the HMAC.
+
+Messages appear as a thread on the contact, and replies send through the platform. Live
+traffic needs an approved app on each platform (`leads_retrieval`, `pages_messaging`,
+`instagram_manage_messages`, or a TikTok Business app); the pipeline itself is exercised by
+simulated payloads.
+
 ## Architecture
 
 ```

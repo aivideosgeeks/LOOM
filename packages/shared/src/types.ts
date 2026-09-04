@@ -88,6 +88,11 @@ export interface ContactDTO {
   updatedAt: string;
   openDeals?: number;
   duplicateCandidates?: number;
+  /**
+   * Platforms this person has been reached on. The external id is deliberately
+   * not exposed: the UI only needs to know a reply route exists.
+   */
+  externalRefs?: Array<{ platform: IntegrationPlatform; handle: string | null }>;
 }
 
 export interface DealDTO {

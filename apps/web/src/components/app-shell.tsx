@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Bot, CircleDot, Contact, Copy, Handshake, LayoutDashboard, ListTodo, LogOut, MessageSquareText, Search, Sparkles, Users } from "lucide-react";
+import { Plug, BarChart3, Bot, CircleDot, Contact, Copy, Handshake, LayoutDashboard, ListTodo, LogOut, MessageSquareText, Search, Sparkles, Users } from "lucide-react";
 import { AssistantFab } from "@/components/assistant-fab";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,7 @@ const NAV = [
 
 const ADMIN_NAV = [
   { href: "/admin/team", label: "Team", icon: Users },
+  { href: "/admin/integrations", label: "Integrations", icon: Plug },
   { href: "/duplicates", label: "Duplicates", icon: Copy, ai: true },
   { href: "/admin/ai-usage", label: "AI usage", icon: BarChart3 },
 ];

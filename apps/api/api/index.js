@@ -3906,6 +3906,12 @@ function toContactDTO(doc, extra = {}) {
     lastActivityAt: toIso(c.lastActivityAt) ?? toIso(c.createdAt) ?? (/* @__PURE__ */ new Date()).toISOString(),
     createdAt: toIso(c.createdAt) ?? "",
     updatedAt: toIso(c.updatedAt) ?? "",
+    // Platform and handle only. The external id is a routing identifier and has
+    // no business leaving the server.
+    externalRefs: (c.externalRefs ?? []).map((r) => ({
+      platform: r.platform,
+      handle: r.handle ?? null
+    })),
     ...extra
   };
 }
@@ -6988,7 +6994,7 @@ var init_integrations = __esm({
         await touchActivity(null, String(contact._id));
       }
       await message.save();
-      res.status(result.ok ? 201 : 502).json({
+      res.status(201).json({
         message: {
           id: String(message._id),
           platform,

@@ -3,6 +3,11 @@
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@tanstack/react-query";
 import type {
   AssistantReply,
+  IntegrationDTO,
+  IntegrationPlatform,
+  PlatformMessageDTO,
+  SyncLogEntryDTO,
+  SyncLogSummary,
   AiStatus,
   InviteDTO,
   InvitePreview,
@@ -99,6 +104,9 @@ export const keys = {
   setupState: ["setup-state"] as const,
   owned: (id: string) => ["owned", id] as const,
   assistantHistory: ["assistant-history"] as const,
+  integrations: ["integrations"] as const,
+  syncLog: (platform: string) => ["sync-log", platform] as const,
+  messages: (contactId: string) => ["messages", contactId] as const,
 };
 
 export function useMe(options: Partial<UseQueryOptions<{ user: UserDTO }>> = {}) {
@@ -480,5 +488,69 @@ export function useClearAssistantHistory() {
   return useMutation({
     mutationFn: () => api<{ ok: true }>("/api/ai/assistant/history", { method: "DELETE" }),
     onSuccess: () => void qc.invalidateQueries({ queryKey: keys.assistantHistory }),
+  });
+}
+
+/* ---------------------------------------------------------------- integrations */
+
+export function useIntegrations(enabled = true) {
+  return useQuery({
+    queryKey: keys.integrations,
+    queryFn: () => api<{ integrations: IntegrationDTO[] }>("/api/integrations"),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useConnectIntegration() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ platform, ...body }: { platform: IntegrationPlatform; accessToken: string; externalId?: string; externalName?: string }) =>
+      api<{ integration: IntegrationDTO }>(`/api/integrations/${platform}/connect`, { method: "POST", json: body }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.integrations }),
+  });
+}
+
+export function useDisconnectIntegration() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (platform: IntegrationPlatform) => api<{ ok: true }>(`/api/integrations/${platform}`, { method: "DELETE" }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.integrations }),
+  });
+}
+
+export function useSyncLog(platform: string, enabled = true) {
+  return useQuery({
+    queryKey: keys.syncLog(platform),
+    queryFn: () =>
+      api<{ summary: SyncLogSummary[]; events: SyncLogEntryDTO[] }>(
+        `/api/integrations/sync-log${platform === "all" ? "" : `?platform=${platform}`}`,
+      ),
+    enabled,
+    // The log is the place you look when something is wrong, so it refreshes itself.
+    refetchInterval: 20_000,
+  });
+}
+
+/** The conversation on a contact. Polled, as the briefs specify, since there is no socket. */
+export function useMessages(contactId: string, enabled = true) {
+  return useQuery({
+    queryKey: keys.messages(contactId),
+    queryFn: () => api<{ messages: PlatformMessageDTO[] }>(`/api/integrations/messages/${contactId}`),
+    enabled,
+    refetchInterval: 20_000,
+  });
+}
+
+export function useSendMessage(contactId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { platform: IntegrationPlatform; text: string }) =>
+      api<{ message: PlatformMessageDTO }>(`/api/integrations/messages/${contactId}`, { method: "POST", json: input }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: keys.messages(contactId) });
+      // An outbound reply becomes a note, so the timeline is stale too.
+      void qc.invalidateQueries({ queryKey: keys.contact(contactId) });
+    },
   });
 }

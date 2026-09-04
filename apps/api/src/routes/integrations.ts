@@ -210,7 +210,12 @@ integrationsRouter.post("/messages/:id", validateBody(sendSchema), async (req, r
   }
   await message.save();
 
-  res.status(result.ok ? 201 : 502).json({
+  // 201 even when the platform refused it. The request did what it was asked:
+  // the message was recorded and an attempt was made. Whether it reached the
+  // recipient is data on the message, not the outcome of this call, and
+  // returning an error status would leave the client reading a status line
+  // ("Bad Gateway") instead of the reason.
+  res.status(201).json({
     message: {
       id: String(message._id),
       platform,

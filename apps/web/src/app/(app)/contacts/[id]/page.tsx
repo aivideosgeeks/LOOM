@@ -9,6 +9,7 @@ import { DraftEmailDialog } from "@/components/draft-email-dialog";
 import { PageHeader } from "@/components/page-header";
 import { ContactDialog, DealDialog } from "@/components/record-dialogs";
 import { TasksPanel } from "@/components/tasks-panel";
+import { MessageThread } from "@/components/message-thread";
 import { NoteComposer, Timeline } from "@/components/timeline";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -40,6 +41,12 @@ export default function ContactDetailPage() {
       toast.error(errorMessage(err));
     }
   };
+
+  // Platforms this person has been reached on, so the thread only offers a
+  // reply route that actually exists.
+  const messagingPlatforms = (contact?.externalRefs ?? [])
+    .map((r) => r.platform)
+    .filter((p) => p === "instagram" || p === "facebook");
 
   return (
     <div className="enter-stack flex min-w-0 flex-col gap-6">
@@ -152,6 +159,7 @@ export default function ContactDetailPage() {
             <TabsList>
               <TabsTrigger value="timeline">Timeline ({notes.length})</TabsTrigger>
               <TabsTrigger value="tasks">Tasks ({tasks.filter((t) => !t.done).length})</TabsTrigger>
+              <TabsTrigger value="messages">Messages</TabsTrigger>
             </TabsList>
             <TabsContent value="timeline" className="space-y-4 pt-3">
               <NoteComposer contact={contact.id} />
@@ -159,6 +167,11 @@ export default function ContactDetailPage() {
             </TabsContent>
             <TabsContent value="tasks" className="pt-3">
               <TasksPanel tasks={tasks} contact={contact.id} />
+            </TabsContent>
+            <TabsContent value="messages" className="pt-3">
+              {/* Inbound messages already appear on the timeline as notes; this is the
+                  conversation view, and the only place a reply can be sent from. */}
+              <MessageThread contactId={contact.id} platforms={messagingPlatforms} />
             </TabsContent>
           </Tabs>
         </div>
