@@ -38,3 +38,18 @@ export const STAGE_STALL_THRESHOLD_DAYS: Record<Stage, number> = {
 
 export const EMAIL_TONES = ["professional", "friendly", "concise"] as const;
 export type EmailTone = (typeof EMAIL_TONES)[number];
+
+/** Third-party sources the CRM can ingest from. */
+export const INTEGRATION_PLATFORMS = ["instagram", "facebook", "tiktok"] as const;
+export type IntegrationPlatform = (typeof INTEGRATION_PLATFORMS)[number];
+
+/** Which capabilities each platform actually offers, so the UI does not promise what it cannot do. */
+export const PLATFORM_CAPABILITIES: Record<
+  IntegrationPlatform,
+  { messaging: boolean; leadForms: boolean; comments: boolean; pollingFallback: boolean; label: string }
+> = {
+  instagram: { messaging: true, leadForms: false, comments: true, pollingFallback: false, label: "Instagram" },
+  facebook: { messaging: true, leadForms: true, comments: false, pollingFallback: false, label: "Facebook" },
+  // TikTok's webhook tier is inconsistent, so polling is a first-class path rather than a fallback nobody built.
+  tiktok: { messaging: false, leadForms: true, comments: false, pollingFallback: true, label: "TikTok" },
+};

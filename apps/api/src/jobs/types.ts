@@ -8,6 +8,10 @@ export interface JobPayloads {
   "risk.scan": Record<string, never>;
   "deal.risk": { dealId: string };
   "score.scanAll": Record<string, never>;
+  /** Polling fallback for platforms whose webhooks cannot be relied on. */
+  "integration.poll": Record<string, never>;
+  /** Reprocesses platform events that failed, since the webhook route must answer 200 regardless. */
+  "integration.retry": Record<string, never>;
 }
 
 export type JobName = keyof JobPayloads;

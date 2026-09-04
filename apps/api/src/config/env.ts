@@ -32,6 +32,14 @@ const envSchema = z.object({
   SEED_ON_START: bool(true),
 
   JWT_SECRET: z.string().default("dev-only-change-me-please"),
+  /** Encrypts third-party access tokens at rest. Falls back to JWT_SECRET when unset. */
+  INTEGRATION_SECRET: z.string().optional(),
+  /** Verifies inbound Meta webhooks and answers their subscription handshake. */
+  META_APP_SECRET: z.string().optional(),
+  META_VERIFY_TOKEN: z.string().optional(),
+  TIKTOK_APP_SECRET: z.string().optional(),
+  /** How often the polling fallback runs, for platforms whose webhooks cannot be trusted. */
+  INTEGRATION_POLL_CRON: z.string().default("*/15 * * * *"),
   JWT_EXPIRES_DAYS: z.coerce.number().default(7),
   COOKIE_SECURE: bool(false),
 

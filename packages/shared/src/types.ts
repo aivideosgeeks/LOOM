@@ -1,4 +1,4 @@
-import type { AiFeature, NoteKind, Role, Stage } from "./constants";
+import type { AiFeature, IntegrationPlatform, NoteKind, Role, Stage } from "./constants";
 
 export interface ScoreBreakdown {
   stagePrior: number;
@@ -213,4 +213,52 @@ export interface SemanticSearchResponse {
   mode: "semantic" | "text";
   degradedReason: string | null;
   hits: SemanticSearchHit[];
+}
+
+export interface IntegrationDTO {
+  platform: IntegrationPlatform;
+  status: "connected" | "disconnected" | "error";
+  externalId: string | null;
+  externalName: string | null;
+  /** Never the token itself; enough to recognise which one is stored. */
+  tokenFingerprint: string | null;
+  expiresAt: string | null;
+  webhookActive: boolean;
+  lastPolledAt: string | null;
+  lastError: string | null;
+  connectedAt: string;
+}
+
+export interface PlatformMessageDTO {
+  id: string;
+  platform: IntegrationPlatform;
+  direction: "in" | "out";
+  text: string;
+  deliveryStatus: "pending" | "sent" | "delivered" | "failed";
+  deliveryError: string | null;
+  sentAt: string;
+  sentBy: { id: string; name: string } | null;
+}
+
+export interface SyncLogEntryDTO {
+  id: string;
+  platform: IntegrationPlatform;
+  kind: "message" | "lead" | "comment";
+  source: "webhook" | "polling";
+  status: "received" | "processed" | "failed" | "skipped";
+  error: string | null;
+  contactId: string | null;
+  attempts: number;
+  createdAt: string;
+  processedAt: string | null;
+}
+
+export interface SyncLogSummary {
+  platform: IntegrationPlatform;
+  processed: number;
+  failed: number;
+  skipped: number;
+  viaWebhook: number;
+  viaPolling: number;
+  lastEventAt: string | null;
 }

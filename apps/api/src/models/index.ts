@@ -6,4 +6,5 @@ export * from "./Task";
 export * from "./Meeting";
 export * from "./DuplicateCandidate";
 export * from "./Invite";
+export * from "./Integration";
 export * from "./Ai";

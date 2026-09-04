@@ -68,6 +68,12 @@ export const jobs = {
   async scanDuplicates() {
     await (await getQueue()).add("dedupe.scanAll", {}, { jobId: `dedupe.scanAll:${Date.now()}` });
   },
+  async pollIntegrations() {
+    await (await getQueue()).add("integration.poll", {}, { jobId: `integration.poll:${Date.now()}` });
+  },
+  async retryIntegrationEvents() {
+    await (await getQueue()).add("integration.retry", {}, { jobId: `integration.retry:${Date.now()}` });
+  },
   async rescoreAll() {
     await (await getQueue()).add("score.scanAll", {}, { jobId: `score.scanAll:${Date.now()}` });
   },

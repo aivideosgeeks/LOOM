@@ -49,6 +49,14 @@ var init_env = __esm({
       CRON_SECRET: z.string().optional(),
       SEED_ON_START: bool(true),
       JWT_SECRET: z.string().default("dev-only-change-me-please"),
+      /** Encrypts third-party access tokens at rest. Falls back to JWT_SECRET when unset. */
+      INTEGRATION_SECRET: z.string().optional(),
+      /** Verifies inbound Meta webhooks and answers their subscription handshake. */
+      META_APP_SECRET: z.string().optional(),
+      META_VERIFY_TOKEN: z.string().optional(),
+      TIKTOK_APP_SECRET: z.string().optional(),
+      /** How often the polling fallback runs, for platforms whose webhooks cannot be trusted. */
+      INTEGRATION_POLL_CRON: z.string().default("*/15 * * * *"),
       JWT_EXPIRES_DAYS: z.coerce.number().default(7),
       COOKIE_SECURE: bool(false),
       AI_PROVIDER: z.enum(["auto", "anthropic", "openai", "openrouter", "groq", "custom", "none"]).default("auto"),
@@ -231,7 +239,7 @@ var init_auth = __esm({
 });
 
 // ../../packages/shared/src/constants.ts
-var PIPELINE_STAGES, OPEN_STAGES, CLOSED_STAGES, ROLES, NOTE_KINDS, ENGAGEMENT_KINDS, AI_FEATURES, STAGE_STALL_THRESHOLD_DAYS, EMAIL_TONES;
+var PIPELINE_STAGES, OPEN_STAGES, CLOSED_STAGES, ROLES, NOTE_KINDS, ENGAGEMENT_KINDS, AI_FEATURES, STAGE_STALL_THRESHOLD_DAYS, EMAIL_TONES, INTEGRATION_PLATFORMS, PLATFORM_CAPABILITIES;
 var init_constants = __esm({
   "../../packages/shared/src/constants.ts"() {
     "use strict";
@@ -261,6 +269,13 @@ var init_constants = __esm({
       Lost: Infinity
     };
     EMAIL_TONES = ["professional", "friendly", "concise"];
+    INTEGRATION_PLATFORMS = ["instagram", "facebook", "tiktok"];
+    PLATFORM_CAPABILITIES = {
+      instagram: { messaging: true, leadForms: false, comments: true, pollingFallback: false, label: "Instagram" },
+      facebook: { messaging: true, leadForms: true, comments: false, pollingFallback: false, label: "Facebook" },
+      // TikTok's webhook tier is inconsistent, so polling is a first-class path rather than a fallback nobody built.
+      tiktok: { messaging: false, leadForms: true, comments: false, pollingFallback: true, label: "TikTok" }
+    };
   }
 });
 
@@ -1321,6 +1336,12 @@ var init_queue = __esm({
       async scanDuplicates() {
         await (await getQueue()).add("dedupe.scanAll", {}, { jobId: `dedupe.scanAll:${Date.now()}` });
       },
+      async pollIntegrations() {
+        await (await getQueue()).add("integration.poll", {}, { jobId: `integration.poll:${Date.now()}` });
+      },
+      async retryIntegrationEvents() {
+        await (await getQueue()).add("integration.retry", {}, { jobId: `integration.retry:${Date.now()}` });
+      },
       async rescoreAll() {
         await (await getQueue()).add("score.scanAll", {}, { jobId: `score.scanAll:${Date.now()}` });
       }
@@ -1367,12 +1388,29 @@ var init_Contact = __esm({
         scoredAt: { type: Date, default: null },
         lastActivityAt: { type: Date, default: () => /* @__PURE__ */ new Date(), index: true },
         /** Set when this contact was merged into another (soft delete). */
-        mergedInto: { type: Schema2.Types.ObjectId, ref: "Contact", default: null, index: true }
+        mergedInto: { type: Schema2.Types.ObjectId, ref: "Contact", default: null, index: true },
+        /**
+         * Identities on connected platforms, so a second DM from the same person
+         * finds this contact instead of creating another. A person can appear on
+         * more than one platform, hence a list rather than a field.
+         */
+        externalRefs: {
+          type: [
+            {
+              _id: false,
+              platform: { type: String, required: true },
+              externalId: { type: String, required: true },
+              handle: { type: String, default: null }
+            }
+          ],
+          default: []
+        }
       },
       { timestamps: true }
     );
     contactSchema.index({ name: "text", email: "text", company: "text" });
     contactSchema.index({ email: 1 }, { sparse: true });
+    contactSchema.index({ "externalRefs.platform": 1, "externalRefs.externalId": 1 }, { sparse: true });
     Contact = model2("Contact", contactSchema);
   }
 });
@@ -1558,14 +1596,107 @@ var init_Invite = __esm({
   }
 });
 
-// src/models/Ai.ts
+// src/models/Integration.ts
 import { Schema as Schema9, model as model9 } from "mongoose";
+var integrationSchema, Integration, webhookEventSchema, WebhookEvent, messageSchema, Message, leadFormMappingSchema, LeadFormMapping;
+var init_Integration = __esm({
+  "src/models/Integration.ts"() {
+    "use strict";
+    init_src();
+    integrationSchema = new Schema9(
+      {
+        platform: { type: String, enum: INTEGRATION_PLATFORMS, required: true, unique: true },
+        status: { type: String, enum: ["connected", "disconnected", "error"], default: "connected", index: true },
+        /** Sealed. Never select this into anything that reaches a response. */
+        accessToken: { type: String, required: true },
+        refreshToken: { type: String, default: null },
+        expiresAt: { type: Date, default: null },
+        /** Page id, business account id, advertiser id — whatever the platform scopes calls to. */
+        externalId: { type: String, default: null },
+        externalName: { type: String, default: null },
+        /** Verifies inbound webhook signatures. Sealed, like the token. */
+        webhookSecret: { type: String, default: null },
+        /** Whether a webhook subscription actually succeeded, which TikTok often refuses. */
+        webhookActive: { type: Boolean, default: false },
+        /** Where polling resumed from, for platforms where webhooks cannot be relied on. */
+        lastPolledAt: { type: Date, default: null },
+        lastError: { type: String, default: null },
+        connectedBy: { type: Schema9.Types.ObjectId, ref: "User", required: true }
+      },
+      { timestamps: true }
+    );
+    Integration = model9("Integration", integrationSchema);
+    webhookEventSchema = new Schema9(
+      {
+        platform: { type: String, enum: INTEGRATION_PLATFORMS, required: true },
+        eventId: { type: String, required: true },
+        kind: { type: String, enum: ["message", "lead", "comment"], required: true },
+        /** How it arrived, so the sync log can show whether polling is carrying the load. */
+        source: { type: String, enum: ["webhook", "polling"], default: "webhook" },
+        status: { type: String, enum: ["received", "processed", "failed", "skipped"], default: "received", index: true },
+        payload: { type: Schema9.Types.Mixed, default: {} },
+        error: { type: String, default: null },
+        contact: { type: Schema9.Types.ObjectId, ref: "Contact", default: null },
+        processedAt: { type: Date, default: null },
+        attempts: { type: Number, default: 0 }
+      },
+      { timestamps: { createdAt: true, updatedAt: false }, minimize: false }
+    );
+    webhookEventSchema.index({ platform: 1, eventId: 1 }, { unique: true });
+    webhookEventSchema.index({ createdAt: -1 });
+    WebhookEvent = model9("WebhookEvent", webhookEventSchema);
+    messageSchema = new Schema9(
+      {
+        platform: { type: String, enum: INTEGRATION_PLATFORMS, required: true },
+        contact: { type: Schema9.Types.ObjectId, ref: "Contact", required: true, index: true },
+        deal: { type: Schema9.Types.ObjectId, ref: "Deal", default: null },
+        direction: { type: String, enum: ["in", "out"], required: true },
+        text: { type: String, required: true },
+        externalId: { type: String, default: null },
+        /** Set for outbound messages the user sent from the CRM. */
+        sentBy: { type: Schema9.Types.ObjectId, ref: "User", default: null },
+        deliveryStatus: { type: String, enum: ["pending", "sent", "delivered", "failed"], default: "sent" },
+        deliveryError: { type: String, default: null },
+        sentAt: { type: Date, default: () => /* @__PURE__ */ new Date() },
+        /** The note this message produced, so deleting one can clean up the other. */
+        note: { type: Schema9.Types.ObjectId, ref: "Note", default: null }
+      },
+      { timestamps: true }
+    );
+    messageSchema.index({ contact: 1, sentAt: -1 });
+    Message = model9("Message", messageSchema);
+    leadFormMappingSchema = new Schema9(
+      {
+        platform: { type: String, enum: INTEGRATION_PLATFORMS, required: true },
+        formId: { type: String, required: true },
+        formName: { type: String, default: "" },
+        fieldMappings: {
+          type: [
+            {
+              _id: false,
+              externalKey: { type: String, required: true },
+              /** A Contact field, or "note" to append it to the contact's timeline. */
+              crmField: { type: String, required: true }
+            }
+          ],
+          default: []
+        }
+      },
+      { timestamps: true }
+    );
+    leadFormMappingSchema.index({ platform: 1, formId: 1 }, { unique: true });
+    LeadFormMapping = model9("LeadFormMapping", leadFormMappingSchema);
+  }
+});
+
+// src/models/Ai.ts
+import { Schema as Schema10, model as model10 } from "mongoose";
 var aiUsageSchema, AiUsage, aiCacheSchema, AiCache, noteEmbeddingSchema, NoteEmbedding, assistantExchangeSchema, AssistantExchange;
 var init_Ai = __esm({
   "src/models/Ai.ts"() {
     "use strict";
     init_src();
-    aiUsageSchema = new Schema9(
+    aiUsageSchema = new Schema10(
       {
         feature: { type: String, enum: AI_FEATURES, required: true, index: true },
         provider: { type: String, required: true },
@@ -1578,44 +1709,44 @@ var init_Ai = __esm({
         estCostUsd: { type: Number, default: 0 },
         latencyMs: { type: Number, default: 0 },
         error: { type: String, default: null },
-        user: { type: Schema9.Types.ObjectId, ref: "User", default: null },
+        user: { type: Schema10.Types.ObjectId, ref: "User", default: null },
         refType: { type: String, default: null },
         refId: { type: String, default: null }
       },
       { timestamps: { createdAt: true, updatedAt: false } }
     );
     aiUsageSchema.index({ createdAt: -1 });
-    AiUsage = model9("AiUsage", aiUsageSchema);
-    aiCacheSchema = new Schema9(
+    AiUsage = model10("AiUsage", aiUsageSchema);
+    aiCacheSchema = new Schema10(
       {
         key: { type: String, required: true, unique: true },
         feature: { type: String, required: true },
-        value: { type: Schema9.Types.Mixed, required: true },
+        value: { type: Schema10.Types.Mixed, required: true },
         expiresAt: { type: Date, required: true }
       },
       { timestamps: { createdAt: true, updatedAt: false }, minimize: false }
     );
     aiCacheSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-    AiCache = model9("AiCache", aiCacheSchema);
-    noteEmbeddingSchema = new Schema9(
+    AiCache = model10("AiCache", aiCacheSchema);
+    noteEmbeddingSchema = new Schema10(
       {
-        note: { type: Schema9.Types.ObjectId, ref: "Note", required: true },
+        note: { type: Schema10.Types.ObjectId, ref: "Note", required: true },
         model: { type: String, required: true },
         dims: { type: Number, required: true },
         vec: { type: Buffer, default: null },
         vector: { type: [Number], default: void 0 },
-        owner: { type: Schema9.Types.ObjectId, ref: "User", required: true, index: true },
-        deal: { type: Schema9.Types.ObjectId, ref: "Deal", default: null },
-        contact: { type: Schema9.Types.ObjectId, ref: "Contact", default: null }
+        owner: { type: Schema10.Types.ObjectId, ref: "User", required: true, index: true },
+        deal: { type: Schema10.Types.ObjectId, ref: "Deal", default: null },
+        contact: { type: Schema10.Types.ObjectId, ref: "Contact", default: null }
       },
       { timestamps: true }
     );
     noteEmbeddingSchema.index({ note: 1, model: 1 }, { unique: true });
     noteEmbeddingSchema.index({ model: 1 });
-    NoteEmbedding = model9("NoteEmbedding", noteEmbeddingSchema);
-    assistantExchangeSchema = new Schema9(
+    NoteEmbedding = model10("NoteEmbedding", noteEmbeddingSchema);
+    assistantExchangeSchema = new Schema10(
       {
-        owner: { type: Schema9.Types.ObjectId, ref: "User", required: true, index: true },
+        owner: { type: Schema10.Types.ObjectId, ref: "User", required: true, index: true },
         message: { type: String, required: true },
         kind: { type: String, enum: ["answer", "record", "guide", "refused", "applied"], required: true },
         summary: { type: String, default: "" },
@@ -1627,7 +1758,7 @@ var init_Ai = __esm({
     );
     assistantExchangeSchema.index({ owner: 1, createdAt: -1 });
     assistantExchangeSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-    AssistantExchange = model9("AssistantExchange", assistantExchangeSchema);
+    AssistantExchange = model10("AssistantExchange", assistantExchangeSchema);
   }
 });
 
@@ -1640,12 +1771,16 @@ __export(models_exports, {
   Contact: () => Contact,
   Deal: () => Deal,
   DuplicateCandidate: () => DuplicateCandidate,
+  Integration: () => Integration,
   Invite: () => Invite,
+  LeadFormMapping: () => LeadFormMapping,
   Meeting: () => Meeting,
+  Message: () => Message,
   Note: () => Note,
   NoteEmbedding: () => NoteEmbedding,
   Task: () => Task,
-  User: () => User
+  User: () => User,
+  WebhookEvent: () => WebhookEvent
 });
 var init_models = __esm({
   "src/models/index.ts"() {
@@ -1658,6 +1793,7 @@ var init_models = __esm({
     init_Meeting();
     init_DuplicateCandidate();
     init_Invite();
+    init_Integration();
     init_Ai();
   }
 });
@@ -1681,17 +1817,17 @@ var init_hash = __esm({
 });
 
 // src/ai/costs.ts
-function estimateCostUsd(model10, usage) {
-  if (FREE_MODEL_PATTERNS.some((re) => re.test(model10))) return 0;
-  const price = PRICES[model10];
+function estimateCostUsd(model11, usage) {
+  if (FREE_MODEL_PATTERNS.some((re) => re.test(model11))) return 0;
+  const price = PRICES[model11];
   if (!price) return 0;
   const cacheRead = price.cacheRead ?? price.input * 0.1;
   const cacheWrite = price.cacheWrite ?? price.input * 1.25;
   const cost = (usage.inputTokens * price.input + usage.outputTokens * price.output + usage.cacheReadTokens * cacheRead + usage.cacheWriteTokens * cacheWrite) / 1e6;
   return Math.round(cost * 1e6) / 1e6;
 }
-function estimateEmbeddingCostUsd(model10, tokens) {
-  const perM = EMBEDDING_PRICES[model10] ?? 0;
+function estimateEmbeddingCostUsd(model11, tokens) {
+  const perM = EMBEDDING_PRICES[model11] ?? 0;
   return Math.round(tokens * perM / 1e6 * 1e6) / 1e6;
 }
 var FREE_MODEL_PATTERNS, PRICES, EMBEDDING_PRICES;
@@ -1921,8 +2057,8 @@ var init_anthropic = __esm({
       model;
       configured = true;
       client;
-      constructor(apiKey, model10) {
-        this.model = model10;
+      constructor(apiKey, model11) {
+        this.model = model11;
         this.client = new Anthropic({ apiKey, timeout: env.AI_TIMEOUT_MS, maxRetries: 1 });
       }
       async generateStructured(req) {
@@ -2088,8 +2224,8 @@ var init_openaiCompatible = __esm({
     init_logger();
     init_types2();
     OpenAiCompatibleProvider = class {
-      constructor(model10, apiKey, baseUrl, label, referer) {
-        this.model = model10;
+      constructor(model11, apiKey, baseUrl, label, referer) {
+        this.model = model11;
         this.apiKey = apiKey;
         this.baseUrl = baseUrl;
         this.label = label;
@@ -2324,10 +2460,10 @@ function cacheKeyFor(opts) {
 async function callStructured(opts) {
   const provider3 = getProvider();
   const started = Date.now();
-  const key = cacheKeyFor(opts);
-  if (key) {
+  const key2 = cacheKeyFor(opts);
+  if (key2) {
     try {
-      const hit = await AiCache.findOne({ key, expiresAt: { $gt: /* @__PURE__ */ new Date() } }).lean();
+      const hit = await AiCache.findOne({ key: key2, expiresAt: { $gt: /* @__PURE__ */ new Date() } }).lean();
       if (hit) {
         const parsed2 = opts.schema.safeParse(hit.value);
         if (parsed2.success) {
@@ -2378,10 +2514,10 @@ async function callStructured(opts) {
     }
     circuit.success();
     await logUsage(opts, "ok", response.usage, Date.now() - started, null);
-    if (key && opts.cache) {
+    if (key2 && opts.cache) {
       try {
         await AiCache.updateOne(
-          { key },
+          { key: key2 },
           { $set: { feature: opts.feature, value: parsed2.data, expiresAt: new Date(Date.now() + opts.cache.ttlMs) } },
           { upsert: true }
         );
@@ -2780,10 +2916,10 @@ function blockingKeys(c) {
 function candidatePairs(contacts) {
   const blocks = /* @__PURE__ */ new Map();
   for (const c of contacts) {
-    for (const key of blockingKeys(c)) {
-      const bucket = blocks.get(key);
+    for (const key2 of blockingKeys(c)) {
+      const bucket = blocks.get(key2);
       if (bucket) bucket.push(c);
-      else blocks.set(key, [c]);
+      else blocks.set(key2, [c]);
     }
   }
   const seen = /* @__PURE__ */ new Set();
@@ -2792,9 +2928,9 @@ function candidatePairs(contacts) {
     if (bucket.length < 2 || bucket.length > 60) continue;
     for (let i = 0; i < bucket.length; i++) {
       for (let j = i + 1; j < bucket.length; j++) {
-        const key = pairKey(bucket[i].id, bucket[j].id);
-        if (seen.has(key)) continue;
-        seen.add(key);
+        const key2 = pairKey(bucket[i].id, bucket[j].id);
+        if (seen.has(key2)) continue;
+        seen.add(key2);
         pairs.push([bucket[i], bucket[j]]);
       }
     }
@@ -2833,16 +2969,16 @@ function toLike(c) {
   return { id: String(c._id), name: c.name, email: c.email ?? null, phone: c.phone ?? null, company: c.company ?? null };
 }
 async function upsertCandidate(a, b, rule) {
-  const key = pairKey(a.id, b.id);
-  const existing = await DuplicateCandidate.findOne({ pairKey: key }).lean();
+  const key2 = pairKey(a.id, b.id);
+  const existing = await DuplicateCandidate.findOne({ pairKey: key2 }).lean();
   if (existing && existing.status !== "pending") return false;
   const verdict = await judgePair(a, b, rule);
   try {
     const res = await DuplicateCandidate.updateOne(
-      { pairKey: key, status: "pending" },
+      { pairKey: key2, status: "pending" },
       {
         $set: { score: rule.score, reasons: rule.reasons, aiVerdict: verdict ?? existing?.aiVerdict ?? null },
-        $setOnInsert: { a: a.id, b: b.id, pairKey: key, status: "pending" }
+        $setOnInsert: { a: a.id, b: b.id, pairKey: key2, status: "pending" }
       },
       { upsert: true }
     );
@@ -3870,15 +4006,15 @@ async function postJson(url, headers, body, timeoutMs = 2e4) {
   if (!res.ok) throw new Error(`${url} responded ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return res.json();
 }
-async function logEmbeddingUsage(provider3, model10, tokens, latencyMs, error) {
+async function logEmbeddingUsage(provider3, model11, tokens, latencyMs, error) {
   try {
     await AiUsage.create({
       feature: "semantic_search",
       provider: provider3,
-      model: model10,
+      model: model11,
       status: error ? "error" : "ok",
       inputTokens: tokens,
-      estCostUsd: estimateEmbeddingCostUsd(model10, tokens),
+      estCostUsd: estimateEmbeddingCostUsd(model11, tokens),
       latencyMs,
       error
     });
@@ -3919,8 +4055,8 @@ var init_provider2 = __esm({
       name = "local";
       model;
       loader = null;
-      constructor(model10) {
-        this.model = model10;
+      constructor(model11) {
+        this.model = model11;
       }
       load() {
         if (!this.loader) {
@@ -3953,9 +4089,9 @@ var init_provider2 = __esm({
       }
     };
     VoyageProvider = class {
-      constructor(apiKey, model10) {
+      constructor(apiKey, model11) {
         this.apiKey = apiKey;
-        this.model = model10;
+        this.model = model11;
       }
       apiKey;
       model;
@@ -3976,9 +4112,9 @@ var init_provider2 = __esm({
       }
     };
     OpenAIProvider = class {
-      constructor(apiKey, model10) {
+      constructor(apiKey, model11) {
         this.apiKey = apiKey;
-        this.model = model10;
+        this.model = model11;
       }
       apiKey;
       model;
@@ -4056,11 +4192,11 @@ var init_vectorStore = __esm({
     MongoVectorStore = class {
       name = "mongo";
       cache = /* @__PURE__ */ new Map();
-      async upsert(model10, items) {
+      async upsert(model11, items) {
         await Promise.all(
           items.map(
             (item) => NoteEmbedding.updateOne(
-              { note: new Types.ObjectId(item.id), model: model10 },
+              { note: new Types.ObjectId(item.id), model: model11 },
               {
                 $set: {
                   dims: item.vector.length,
@@ -4075,12 +4211,12 @@ var init_vectorStore = __esm({
             )
           )
         );
-        this.cache.delete(model10);
+        this.cache.delete(model11);
       }
-      async load(model10) {
-        const hit = this.cache.get(model10);
+      async load(model11) {
+        const hit = this.cache.get(model11);
         if (hit) return hit;
-        const rows = await NoteEmbedding.find({ model: model10 }).select("note owner vec vector").lean();
+        const rows = await NoteEmbedding.find({ model: model11 }).select("note owner vec vector").lean();
         const loaded = [];
         for (const r of rows) {
           const raw = r;
@@ -4088,11 +4224,11 @@ var init_vectorStore = __esm({
           if (!vec || !vec.length) continue;
           loaded.push({ id: String(raw.note), owner: String(raw.owner), vec });
         }
-        this.cache.set(model10, loaded);
+        this.cache.set(model11, loaded);
         return loaded;
       }
-      async query(model10, vector, topK, filter) {
-        const rows = await this.load(model10);
+      async query(model11, vector, topK, filter) {
+        const rows = await this.load(model11);
         const probe = normalize(vector);
         const scored = [];
         for (const row of rows) {
@@ -4101,9 +4237,9 @@ var init_vectorStore = __esm({
         }
         return scored.sort((x, y) => y.score - x.score).slice(0, topK);
       }
-      async remove(model10, ids) {
-        await NoteEmbedding.deleteMany({ model: model10, note: { $in: ids.map((id) => new Types.ObjectId(id)) } });
-        this.cache.delete(model10);
+      async remove(model11, ids) {
+        await NoteEmbedding.deleteMany({ model: model11, note: { $in: ids.map((id) => new Types.ObjectId(id)) } });
+        this.cache.delete(model11);
       }
       async healthy() {
         return true;
@@ -4132,9 +4268,9 @@ var init_vectorStore = __esm({
         }
         return this.indexPromise;
       }
-      async upsert(model10, items) {
+      async upsert(model11, items) {
         const idx = await this.index();
-        await idx.namespace(model10).upsert({
+        await idx.namespace(model11).upsert({
           records: items.map((i) => ({
             id: i.id,
             values: i.vector,
@@ -4142,9 +4278,9 @@ var init_vectorStore = __esm({
           }))
         });
       }
-      async query(model10, vector, topK, filter) {
+      async query(model11, vector, topK, filter) {
         const idx = await this.index();
-        const res = await idx.namespace(model10).query({
+        const res = await idx.namespace(model11).query({
           vector,
           topK,
           includeMetadata: false,
@@ -4152,9 +4288,9 @@ var init_vectorStore = __esm({
         });
         return (res.matches ?? []).map((m) => ({ id: m.id, score: m.score ?? 0 }));
       }
-      async remove(model10, ids) {
+      async remove(model11, ids) {
         const idx = await this.index();
-        await idx.namespace(model10).deleteMany({ ids });
+        await idx.namespace(model11).deleteMany({ ids });
       }
       async healthy() {
         try {
@@ -4275,6 +4411,363 @@ var init_semanticSearch = __esm({
   }
 });
 
+// src/lib/secretBox.ts
+import { createCipheriv, createDecipheriv, createHash as createHash2, randomBytes, timingSafeEqual } from "node:crypto";
+function key() {
+  const material = env.INTEGRATION_SECRET || env.JWT_SECRET;
+  return createHash2("sha256").update(`loom:integration:${material}`).digest();
+}
+function usingFallbackSecret() {
+  return !env.INTEGRATION_SECRET;
+}
+function seal(plaintext) {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key(), iv);
+  const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return [VERSION, iv.toString("base64url"), tag.toString("base64url"), enc.toString("base64url")].join(".");
+}
+function open(sealed) {
+  try {
+    const [version, iv, tag, data] = sealed.split(".");
+    if (version !== VERSION || !iv || !tag || !data) return null;
+    const decipher = createDecipheriv("aes-256-gcm", key(), Buffer.from(iv, "base64url"));
+    decipher.setAuthTag(Buffer.from(tag, "base64url"));
+    return Buffer.concat([decipher.update(Buffer.from(data, "base64url")), decipher.final()]).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+function fingerprint(plaintext) {
+  if (plaintext.length <= 8) return "\u2026";
+  return `${plaintext.slice(0, 4)}\u2026${plaintext.slice(-4)}`;
+}
+function signatureMatches(expected, received) {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(received);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+var VERSION;
+var init_secretBox = __esm({
+  "src/lib/secretBox.ts"() {
+    "use strict";
+    init_env();
+    init_logger();
+    VERSION = "v1";
+    if (usingFallbackSecret() && env.NODE_ENV === "production") {
+      logger.warn("INTEGRATION_SECRET is not set: third-party tokens are encrypted with a key derived from JWT_SECRET. Rotating JWT_SECRET will invalidate stored connections.");
+    }
+  }
+});
+
+// src/integrations/ingest.ts
+async function defaultOwnerId() {
+  const admin = await User.findOne({ role: "admin" }).select("_id").sort({ createdAt: 1 }).lean();
+  if (admin) return String(admin._id);
+  const anyone = await User.findOne().select("_id").lean();
+  if (!anyone) throw new Error("Cannot ingest: this CRM has no accounts yet.");
+  return String(anyone._id);
+}
+async function resolveContact(input) {
+  const { platform, externalId, handle, email, phone } = input;
+  if (externalId) {
+    const byRef = await Contact.findOne({
+      mergedInto: null,
+      externalRefs: { $elemMatch: { platform, externalId } }
+    });
+    if (byRef) return { contact: byRef, created: false };
+  }
+  const or = [];
+  if (email) or.push({ email: email.toLowerCase() });
+  if (phone) or.push({ phone });
+  if (or.length > 0) {
+    const byContactDetail = await Contact.findOne({ mergedInto: null, $or: or });
+    if (byContactDetail) {
+      if (externalId) {
+        await Contact.updateOne(
+          { _id: byContactDetail._id, "externalRefs.externalId": { $ne: externalId } },
+          { $push: { externalRefs: { platform, externalId, handle: handle ?? null } } }
+        );
+      }
+      return { contact: byContactDetail, created: false };
+    }
+  }
+  const contact = await Contact.create({
+    name: input.name?.trim() || handle || "Unknown contact",
+    email: email?.toLowerCase() ?? null,
+    phone: phone ?? null,
+    tags: [`source:${platform}`],
+    owner: await defaultOwnerId(),
+    externalRefs: externalId ? [{ platform, externalId, handle: handle ?? null }] : []
+  });
+  await jobs.dedupeContact(String(contact._id));
+  return { contact, created: true };
+}
+async function resolveDeal(contact, platform, title) {
+  const since = new Date(Date.now() - NEW_DEAL_WINDOW_DAYS * 864e5);
+  const open2 = await Deal.findOne({
+    contact: contact._id,
+    stage: { $nin: ["Won", "Lost"] },
+    updatedAt: { $gte: since }
+  }).sort({ updatedAt: -1 });
+  if (open2) return { deal: open2, created: false };
+  const deal = await Deal.create({
+    title,
+    contact: contact._id,
+    value: 0,
+    stage: "Lead",
+    owner: contact.owner,
+    stageHistory: [{ stage: "Lead", enteredAt: /* @__PURE__ */ new Date() }],
+    lastActivityAt: /* @__PURE__ */ new Date()
+  });
+  return { deal, created: true };
+}
+async function ingestMessage(input) {
+  const { contact, created } = await resolveContact({
+    platform: input.platform,
+    externalId: input.senderExternalId,
+    handle: input.senderHandle,
+    name: input.senderName,
+    email: input.email,
+    phone: input.phone
+  });
+  const label = PLATFORM_CAPABILITIES[input.platform].label;
+  const { deal } = await resolveDeal(contact, input.platform, `${label} enquiry - ${contact.name}`);
+  const sentAt = input.sentAt ?? /* @__PURE__ */ new Date();
+  const note = await createNote({
+    kind: "note",
+    content: input.text,
+    dealId: String(deal._id),
+    contactId: String(contact._id),
+    ownerId: String(contact.owner)
+  });
+  await Message.create({
+    platform: input.platform,
+    contact: contact._id,
+    deal: deal._id,
+    direction: "in",
+    text: input.text,
+    externalId: input.externalMessageId,
+    deliveryStatus: "delivered",
+    sentAt,
+    note: note._id
+  });
+  await touchActivity(String(deal._id), String(contact._id), sentAt);
+  return { contactId: String(contact._id), dealId: String(deal._id), created };
+}
+async function ingestLead(input) {
+  const mapping = await LeadFormMapping.findOne({ platform: input.platform, formId: input.formId }).lean();
+  const byKey = new Map((mapping?.fieldMappings ?? []).map((m) => [m.externalKey, m.crmField]));
+  const mapped = {};
+  const unmapped = [];
+  for (const [key2, value] of Object.entries(input.fields)) {
+    if (!value?.trim()) continue;
+    const target = byKey.get(key2) ?? guessField(key2);
+    if (target && target !== "note") mapped[target] = value.trim();
+    else unmapped.push([key2, value.trim()]);
+  }
+  const { contact, created } = await resolveContact({
+    platform: input.platform,
+    externalId: input.externalLeadId,
+    name: mapped.name ?? mapped.full_name ?? null,
+    email: mapped.email ?? null,
+    phone: mapped.phone ?? null
+  });
+  const fill = {};
+  for (const field of ["name", "email", "phone", "company"]) {
+    const value = mapped[field];
+    if (value && !contact.get(field)) fill[field] = field === "email" ? value.toLowerCase() : value;
+  }
+  if (Object.keys(fill).length > 0) await Contact.updateOne({ _id: contact._id }, { $set: fill });
+  const label = PLATFORM_CAPABILITIES[input.platform].label;
+  const { deal } = await resolveDeal(contact, input.platform, `${label} lead - ${input.formName || input.formId}`);
+  const lines = [
+    `${label} lead form: ${input.formName || input.formId}`,
+    ...Object.entries(mapped).map(([k, v]) => `${k}: ${v}`),
+    ...unmapped.map(([k, v]) => `${k}: ${v}`)
+  ];
+  await createNote({
+    kind: "note",
+    content: lines.join("\n"),
+    dealId: String(deal._id),
+    contactId: String(contact._id),
+    ownerId: String(contact.owner)
+  });
+  await touchActivity(String(deal._id), String(contact._id), input.createdAt ?? /* @__PURE__ */ new Date());
+  return { contactId: String(contact._id), dealId: String(deal._id), created };
+}
+function guessField(key2) {
+  const k = key2.toLowerCase().replace(/[^a-z]/g, "");
+  if (k.includes("email")) return "email";
+  if (k.includes("phone") || k.includes("mobile") || k.includes("tel")) return "phone";
+  if (k.includes("company") || k.includes("organisation") || k.includes("organization") || k.includes("business")) return "company";
+  if (k === "name" || k.includes("fullname") || k.includes("yourname")) return "name";
+  return null;
+}
+async function processOnce(meta, handler2) {
+  let event;
+  try {
+    event = await WebhookEvent.create({
+      platform: meta.platform,
+      eventId: meta.eventId,
+      kind: meta.kind,
+      source: meta.source,
+      payload: meta.payload ?? {},
+      attempts: 1
+    });
+  } catch (err) {
+    if (err.code === 11e3) {
+      logger.info({ platform: meta.platform, eventId: meta.eventId }, "Duplicate platform event ignored");
+      return { status: "duplicate" };
+    }
+    throw err;
+  }
+  try {
+    const outcome = await handler2();
+    event.status = "processed";
+    event.contact = outcome.contactId;
+    event.processedAt = /* @__PURE__ */ new Date();
+    await event.save();
+    return { status: "processed", contactId: outcome.contactId };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    event.status = "failed";
+    event.error = message.slice(0, 500);
+    await event.save();
+    logger.error({ err, platform: meta.platform, eventId: meta.eventId }, "Failed to process platform event");
+    return { status: "failed", error: message };
+  }
+}
+var NEW_DEAL_WINDOW_DAYS;
+var init_ingest = __esm({
+  "src/integrations/ingest.ts"() {
+    "use strict";
+    init_src();
+    init_queue();
+    init_logger();
+    init_models();
+    init_activity();
+    NEW_DEAL_WINDOW_DAYS = 30;
+  }
+});
+
+// src/integrations/poll.ts
+var poll_exports = {};
+__export(poll_exports, {
+  pollAllPlatforms: () => pollAllPlatforms,
+  pollPlatform: () => pollPlatform,
+  retryFailedEvents: () => retryFailedEvents
+});
+function isRateLimited(status) {
+  return status === 429;
+}
+async function fetchTikTokLeads(token, advertiserId, since) {
+  const url = new URL("https://business-api.tiktok.com/open_api/v1.3/pages/leads/task/");
+  url.searchParams.set("advertiser_id", advertiserId);
+  url.searchParams.set("start_time", String(Math.floor(since.getTime() / 1e3)));
+  const res = await fetch(url, {
+    headers: { "Access-Token": token, "content-type": "application/json" },
+    signal: AbortSignal.timeout(2e4)
+  });
+  if (isRateLimited(res.status)) throw new Error("Rate limited by TikTok; will retry on the next run.");
+  if (!res.ok) throw new Error(`TikTok returned ${res.status}: ${(await res.text().catch(() => "")).slice(0, 200)}`);
+  const json = await res.json();
+  if (json.code && json.code !== 0) throw new Error(`TikTok error ${json.code}: ${json.message ?? "unknown"}`);
+  return json.data?.list ?? [];
+}
+async function pollPlatform(platform) {
+  const integration = await Integration.findOne({ platform, status: "connected" });
+  if (!integration) return { found: 0, ingested: 0, duplicates: 0 };
+  const token = open(integration.accessToken);
+  if (!token) {
+    integration.status = "error";
+    integration.lastError = "Stored credential could not be decrypted. Reconnect the account.";
+    await integration.save();
+    return { found: 0, ingested: 0, duplicates: 0 };
+  }
+  const since = integration.lastPolledAt ?? new Date(Date.now() - LOOKBACK_MS);
+  let rows = [];
+  try {
+    if (platform === "tiktok") {
+      rows = await fetchTikTokLeads(token, integration.externalId ?? "", since);
+    }
+    integration.lastError = null;
+  } catch (err) {
+    integration.lastError = err instanceof Error ? err.message : String(err);
+    await integration.save();
+    logger.warn({ err, platform }, "Polling failed");
+    return { found: 0, ingested: 0, duplicates: 0 };
+  }
+  let ingested = 0;
+  let duplicates = 0;
+  for (const row of rows) {
+    if (!row.lead_id) continue;
+    const result = await processOnce(
+      { platform, eventId: `tiktok-lead:${row.lead_id}`, kind: "lead", source: "polling", payload: row },
+      () => ingestLead({
+        platform,
+        externalLeadId: row.lead_id,
+        formId: row.form_id ?? "unknown",
+        formName: row.form_name ?? null,
+        fields: Object.fromEntries((row.field_data ?? []).map((f) => [f.name ?? "", f.values?.[0] ?? ""])),
+        createdAt: row.create_time ? new Date(row.create_time * 1e3) : /* @__PURE__ */ new Date()
+      })
+    );
+    if (result.status === "processed") ingested += 1;
+    if (result.status === "duplicate") duplicates += 1;
+  }
+  integration.lastPolledAt = /* @__PURE__ */ new Date();
+  await integration.save();
+  logger.info({ platform, found: rows.length, ingested, duplicates }, "Polling run complete");
+  return { found: rows.length, ingested, duplicates };
+}
+async function pollAllPlatforms() {
+  const connected = await Integration.find({ status: "connected" }).select("platform").lean();
+  for (const row of connected) {
+    const platform = row.platform;
+    if (!PLATFORM_CAPABILITIES[platform]?.pollingFallback) continue;
+    await pollPlatform(platform);
+  }
+}
+async function retryFailedEvents() {
+  const failed = await WebhookEvent.find({ status: "failed", attempts: { $lt: MAX_ATTEMPTS } }).sort({ createdAt: 1 }).limit(50);
+  let recovered = 0;
+  for (const event of failed) {
+    event.attempts += 1;
+    try {
+      const payload = event.payload;
+      if (event.kind === "lead") {
+        await ingestLead(payload);
+      } else {
+        await ingestMessage(payload);
+      }
+      event.status = "processed";
+      event.processedAt = /* @__PURE__ */ new Date();
+      event.error = null;
+      recovered += 1;
+    } catch (err) {
+      event.error = (err instanceof Error ? err.message : String(err)).slice(0, 500);
+      if (event.attempts >= MAX_ATTEMPTS) event.status = "skipped";
+    }
+    await event.save();
+  }
+  if (failed.length > 0) logger.info({ retried: failed.length, recovered }, "Retried failed platform events");
+  return { retried: failed.length, recovered };
+}
+var LOOKBACK_MS, MAX_ATTEMPTS;
+var init_poll = __esm({
+  "src/integrations/poll.ts"() {
+    "use strict";
+    init_src();
+    init_logger();
+    init_secretBox();
+    init_models();
+    init_ingest();
+    LOOKBACK_MS = 60 * 6e4;
+    MAX_ATTEMPTS = 5;
+  }
+});
+
 // src/jobs/handlers.ts
 async function enrichNote(noteId) {
   const note = await Note.findById(noteId);
@@ -4325,6 +4818,12 @@ async function handleJob(job) {
     case "dedupe.scanAll":
       await scanAllContactsForDuplicates();
       return;
+    case "integration.poll":
+      await (await Promise.resolve().then(() => (init_poll(), poll_exports))).pollAllPlatforms();
+      return;
+    case "integration.retry":
+      await (await Promise.resolve().then(() => (init_poll(), poll_exports))).retryFailedEvents();
+      return;
     case "risk.scan":
       await scanAllDealsForRisk();
       return;
@@ -4369,6 +4868,8 @@ async function startJobs() {
   await queue2.schedule("risk-daily", "risk.scan", {}, env.RISK_SCAN_CRON);
   await queue2.schedule("score-daily", "score.scanAll", {}, "0 5 * * *");
   await queue2.schedule("dedupe-nightly", "dedupe.scanAll", {}, "30 5 * * *");
+  await queue2.schedule("integration-poll", "integration.poll", {}, env.INTEGRATION_POLL_CRON);
+  await queue2.schedule("integration-retry", "integration.retry", {}, "*/30 * * * *");
   if (env.RISK_SCAN_ON_START && !isTest && queue2.provider !== "inline") {
     await jobs.rescoreAll();
     await jobs.scanRisk();
@@ -4399,9 +4900,9 @@ __export(seed_exports, {
 });
 import bcrypt from "bcryptjs";
 import mongoose2 from "mongoose";
-async function backdateMany(model10, rows) {
+async function backdateMany(model11, rows) {
   if (rows.length === 0) return;
-  await model10.collection.bulkWrite(
+  await model11.collection.bulkWrite(
     rows.map((r) => ({ updateOne: { filter: { _id: r._id }, update: { $set: { createdAt: r.createdAt } } } })),
     { ordered: false }
   );
@@ -5320,13 +5821,13 @@ function scope(user) {
 function nameFilter(field, name) {
   return { [field]: { $regex: escapeRegex(name), $options: "i" } };
 }
-async function resolveDeal(ref, user) {
+async function resolveDeal2(ref, user) {
   const found = await Deal.find({ ...scope(user), ...nameFilter("title", ref.name) }).select("title").limit(6).lean();
   if (found.length === 1) return { ok: true, value: String(found[0]._id) };
   if (found.length === 0) return { ok: false, message: `I could not find a deal matching "${ref.name}".` };
   return { ok: false, message: `"${ref.name}" matches several deals: ${found.map((d) => d.title).join(", ")}. Which one?` };
 }
-async function resolveContact(ref, user) {
+async function resolveContact2(ref, user) {
   const found = await Contact.find({
     ...scope(user),
     $or: [nameFilter("name", ref.name), nameFilter("company", ref.name)]
@@ -5371,7 +5872,7 @@ async function runAction(action, user) {
       };
     }
     case "create_deal": {
-      const contactId = await resolveContact(action.contact, user);
+      const contactId = await resolveContact2(action.contact, user);
       if (!contactId.ok) return contactId;
       const close = action.expectedCloseDate ? resolveDateToken(action.expectedCloseDate) : null;
       const deal = await createDeal(
@@ -5396,12 +5897,12 @@ async function runAction(action, user) {
       let dealId = null;
       let contactId = null;
       if (action.deal) {
-        const r = await resolveDeal(action.deal, user);
+        const r = await resolveDeal2(action.deal, user);
         if (!r.ok) return r;
         dealId = r.value;
       }
       if (action.contact) {
-        const r = await resolveContact(action.contact, user);
+        const r = await resolveContact2(action.contact, user);
         if (!r.ok) return r;
         contactId = r.value;
       }
@@ -5427,12 +5928,12 @@ async function runAction(action, user) {
       let dealId = null;
       let contactId = null;
       if (action.deal) {
-        const r = await resolveDeal(action.deal, user);
+        const r = await resolveDeal2(action.deal, user);
         if (!r.ok) return r;
         dealId = r.value;
       }
       if (action.contact) {
-        const r = await resolveContact(action.contact, user);
+        const r = await resolveContact2(action.contact, user);
         if (!r.ok) return r;
         contactId = r.value;
       }
@@ -5449,7 +5950,7 @@ async function runAction(action, user) {
       return { ok: true, value: { done: "Added the note", record: ref } };
     }
     case "move_deal": {
-      const r = await resolveDeal(action.deal, user);
+      const r = await resolveDeal2(action.deal, user);
       if (!r.ok) return r;
       const deal = await loadDealForUser(r.value, user);
       const before = deal.stage;
@@ -5478,7 +5979,7 @@ async function runAction(action, user) {
 }
 async function loadRecord(entity, name, user) {
   if (entity === "deal") {
-    const r2 = await resolveDeal({ name }, user);
+    const r2 = await resolveDeal2({ name }, user);
     if (!r2.ok) return r2;
     const deal = await Deal.findById(r2.value).populate("contact", "name company email").populate("owner", "name email role").lean();
     if (!deal) return { ok: false, message: "That deal no longer exists." };
@@ -5494,7 +5995,7 @@ async function loadRecord(entity, name, user) {
       }
     };
   }
-  const r = await resolveContact({ name }, user);
+  const r = await resolveContact2({ name }, user);
   if (!r.ok) return r;
   const contact = await Contact.findById(r.value).populate("owner", "name email role").lean();
   if (!contact) return { ok: false, message: "That contact no longer exists." };
@@ -5756,7 +6257,7 @@ var init_email = __esm({
 });
 
 // src/services/accounts.ts
-import { randomBytes } from "node:crypto";
+import { randomBytes as randomBytes2 } from "node:crypto";
 import bcrypt2 from "bcryptjs";
 async function needsSetup() {
   return await User.countDocuments() === 0;
@@ -5799,7 +6300,7 @@ async function createInvite(input, invitedBy) {
   const email = input.email.toLowerCase().trim();
   if (await User.findOne({ email })) throw new HttpError(409, "Someone with that email address already has an account.");
   await Invite.deleteMany({ email, acceptedAt: null });
-  const token = randomBytes(32).toString("base64url");
+  const token = randomBytes2(32).toString("base64url");
   const invite = await Invite.create({
     email,
     role: input.role,
@@ -6265,13 +6766,449 @@ ${req.body.body}`,
   }
 });
 
-// src/routes/cron.ts
-import { timingSafeEqual } from "node:crypto";
+// src/integrations/send.ts
+function describeFailure(status, body) {
+  if (status === 429) return "Rate limited by the platform. The message was not sent; try again shortly.";
+  if (status === 401 || status === 403) return "The stored access token was rejected. Reconnect the account.";
+  return `Platform returned ${status}: ${body.slice(0, 200)}`;
+}
+async function sendPlatformMessage(platform, recipientExternalId, text) {
+  if (!PLATFORM_CAPABILITIES[platform].messaging) {
+    return { ok: false, error: `${PLATFORM_CAPABILITIES[platform].label} does not offer a messaging API at this access tier.` };
+  }
+  const integration = await Integration.findOne({ platform, status: "connected" });
+  if (!integration) return { ok: false, error: `${platform} is not connected.` };
+  const token = open(integration.accessToken);
+  if (!token) {
+    integration.status = "error";
+    integration.lastError = "Stored credential could not be decrypted. Reconnect the account.";
+    await integration.save();
+    return { ok: false, error: integration.lastError };
+  }
+  const url = `${GRAPH}/${integration.externalId ?? "me"}/messages`;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+      body: JSON.stringify({ recipient: { id: recipientExternalId }, message: { text } }),
+      signal: AbortSignal.timeout(15e3)
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      const error = describeFailure(res.status, body);
+      logger.warn({ platform, status: res.status }, "Outbound platform message failed");
+      return { ok: false, error };
+    }
+    const json = await res.json().catch(() => ({}));
+    return { ok: true, externalId: json.message_id ?? null };
+  } catch (err) {
+    const error = err instanceof Error && err.name === "TimeoutError" ? "The platform did not respond in time." : `Could not reach the platform: ${err instanceof Error ? err.message : String(err)}`;
+    logger.warn({ err, platform }, "Outbound platform message failed");
+    return { ok: false, error };
+  }
+}
+var GRAPH;
+var init_send = __esm({
+  "src/integrations/send.ts"() {
+    "use strict";
+    init_src();
+    init_logger();
+    init_secretBox();
+    init_models();
+    GRAPH = "https://graph.facebook.com/v21.0";
+  }
+});
+
+// src/routes/integrations.ts
 import { Router as Router5 } from "express";
+import { z as z12 } from "zod";
+function platformOf(req, key2 = "platform") {
+  const raw = idParam(req, key2);
+  if (!INTEGRATION_PLATFORMS.includes(raw)) throw badRequest(`Unknown platform: ${raw}`);
+  return raw;
+}
+function toDTO(doc) {
+  const token = open(doc.accessToken);
+  return {
+    platform: doc.platform,
+    status: doc.status,
+    externalId: doc.externalId ?? null,
+    externalName: doc.externalName ?? null,
+    tokenFingerprint: token ? fingerprint(token) : null,
+    expiresAt: doc.expiresAt ? doc.expiresAt.toISOString() : null,
+    webhookActive: doc.webhookActive,
+    lastPolledAt: doc.lastPolledAt ? doc.lastPolledAt.toISOString() : null,
+    lastError: doc.lastError ?? null,
+    connectedAt: doc.createdAt.toISOString()
+  };
+}
+var integrationsRouter, connectSchema, sendSchema;
+var init_integrations = __esm({
+  "src/routes/integrations.ts"() {
+    "use strict";
+    init_src();
+    init_errors();
+    init_secretBox();
+    init_auth();
+    init_validate();
+    init_models();
+    init_activity();
+    init_contacts();
+    init_send();
+    integrationsRouter = Router5();
+    integrationsRouter.get("/", requireRole("admin"), async (_req, res) => {
+      const rows = await Integration.find().sort({ platform: 1 });
+      res.json({ integrations: rows.map(toDTO) });
+    });
+    connectSchema = z12.object({
+      accessToken: z12.string().trim().min(10).max(4e3),
+      refreshToken: z12.string().trim().max(4e3).optional(),
+      externalId: z12.string().trim().max(200).optional(),
+      externalName: z12.string().trim().max(200).optional(),
+      expiresAt: z12.string().datetime().optional()
+    });
+    integrationsRouter.post("/:platform/connect", requireRole("admin"), validateBody(connectSchema), async (req, res) => {
+      const platform = platformOf(req);
+      const doc = await Integration.findOneAndUpdate(
+        { platform },
+        {
+          $set: {
+            platform,
+            accessToken: seal(req.body.accessToken),
+            refreshToken: req.body.refreshToken ? seal(req.body.refreshToken) : null,
+            externalId: req.body.externalId ?? null,
+            externalName: req.body.externalName ?? null,
+            expiresAt: req.body.expiresAt ? new Date(req.body.expiresAt) : null,
+            status: "connected",
+            lastError: null,
+            connectedBy: req.user.id
+          }
+        },
+        { new: true, upsert: true }
+      );
+      res.status(201).json({ integration: toDTO(doc) });
+    });
+    integrationsRouter.delete("/:platform", requireRole("admin"), async (req, res) => {
+      const platform = platformOf(req);
+      const doc = await Integration.findOne({ platform });
+      if (!doc) throw notFound("Integration");
+      await doc.deleteOne();
+      res.json({ ok: true });
+    });
+    integrationsRouter.get("/sync-log", requireRole("admin"), async (req, res) => {
+      const platform = req.query.platform ? platformOf(req, "platform") : null;
+      const filter = platform ? { platform } : {};
+      const [rows, grouped] = await Promise.all([
+        WebhookEvent.find(filter).sort({ createdAt: -1 }).limit(100).lean(),
+        WebhookEvent.aggregate([
+          ...platform ? [{ $match: { platform } }] : [],
+          {
+            $group: {
+              _id: "$platform",
+              processed: { $sum: { $cond: [{ $eq: ["$status", "processed"] }, 1, 0] } },
+              failed: { $sum: { $cond: [{ $eq: ["$status", "failed"] }, 1, 0] } },
+              skipped: { $sum: { $cond: [{ $eq: ["$status", "skipped"] }, 1, 0] } },
+              viaWebhook: { $sum: { $cond: [{ $eq: ["$source", "webhook"] }, 1, 0] } },
+              viaPolling: { $sum: { $cond: [{ $eq: ["$source", "polling"] }, 1, 0] } },
+              lastEventAt: { $max: "$createdAt" }
+            }
+          }
+        ])
+      ]);
+      res.json({
+        summary: grouped.map((g) => ({
+          platform: g._id,
+          processed: g.processed,
+          failed: g.failed,
+          skipped: g.skipped,
+          viaWebhook: g.viaWebhook,
+          viaPolling: g.viaPolling,
+          lastEventAt: g.lastEventAt ? new Date(g.lastEventAt).toISOString() : null
+        })),
+        events: rows.map((r) => ({
+          id: String(r._id),
+          platform: r.platform,
+          kind: r.kind,
+          source: r.source,
+          status: r.status,
+          error: r.error ?? null,
+          contactId: r.contact ? String(r.contact) : null,
+          attempts: r.attempts,
+          createdAt: r.createdAt.toISOString(),
+          processedAt: r.processedAt ? r.processedAt.toISOString() : null
+        }))
+      });
+    });
+    integrationsRouter.get("/messages/:id", async (req, res) => {
+      const contact = await loadContactForUser(idParam(req), req.user);
+      const rows = await Message.find({ contact: contact._id }).sort({ sentAt: 1 }).limit(200).populate("sentBy", "name").lean();
+      res.json({
+        messages: rows.map((m) => ({
+          id: String(m._id),
+          platform: m.platform,
+          direction: m.direction,
+          text: m.text,
+          deliveryStatus: m.deliveryStatus,
+          deliveryError: m.deliveryError ?? null,
+          sentAt: m.sentAt.toISOString(),
+          sentBy: m.sentBy ? { id: String(m.sentBy._id), name: m.sentBy.name } : null
+        }))
+      });
+    });
+    sendSchema = z12.object({
+      platform: z12.enum(INTEGRATION_PLATFORMS),
+      text: z12.string().trim().min(1).max(2e3)
+    });
+    integrationsRouter.post("/messages/:id", validateBody(sendSchema), async (req, res) => {
+      const contact = await loadContactForUser(idParam(req), req.user);
+      const platform = req.body.platform;
+      const ref = (contact.externalRefs ?? []).find((r) => r.platform === platform);
+      if (!ref) throw badRequest(`This contact has no ${platform} conversation to reply to.`);
+      const message = await Message.create({
+        platform,
+        contact: contact._id,
+        direction: "out",
+        text: req.body.text,
+        sentBy: req.user.id,
+        deliveryStatus: "pending"
+      });
+      const result = await sendPlatformMessage(platform, ref.externalId, req.body.text);
+      message.deliveryStatus = result.ok ? "sent" : "failed";
+      message.deliveryError = result.ok ? null : result.error;
+      message.externalId = result.ok ? result.externalId : null;
+      if (result.ok) {
+        const note = await createNote({
+          kind: "note",
+          content: req.body.text,
+          contactId: String(contact._id),
+          ownerId: String(contact.owner),
+          authorId: req.user.id
+        });
+        message.note = note._id;
+        await touchActivity(null, String(contact._id));
+      }
+      await message.save();
+      res.status(result.ok ? 201 : 502).json({
+        message: {
+          id: String(message._id),
+          platform,
+          direction: "out",
+          text: message.text,
+          deliveryStatus: message.deliveryStatus,
+          deliveryError: message.deliveryError,
+          sentAt: message.sentAt.toISOString(),
+          sentBy: { id: req.user.id, name: req.user.name }
+        }
+      });
+    });
+    integrationsRouter.get("/threads", async (req, res) => {
+      const scope2 = req.user.role === "admin" ? {} : { owner: req.user.id };
+      const contactIds = await Contact.find(scope2).select("_id").lean();
+      const rows = await Message.aggregate([
+        { $match: { contact: { $in: contactIds.map((c) => c._id) } } },
+        { $group: { _id: { contact: "$contact", platform: "$platform" }, count: { $sum: 1 }, lastAt: { $max: "$sentAt" } } }
+      ]);
+      res.json({
+        threads: rows.map((r) => ({
+          contactId: String(r._id.contact),
+          platform: r._id.platform,
+          count: r.count,
+          lastAt: new Date(r.lastAt).toISOString()
+        }))
+      });
+    });
+  }
+});
+
+// src/integrations/adapters.ts
+import { createHmac } from "node:crypto";
+function verifyMeta(rawBody, headers) {
+  const secret = env.META_APP_SECRET;
+  if (!secret) return false;
+  const header = headers["x-hub-signature-256"];
+  const received = Array.isArray(header) ? header[0] : header;
+  if (!received) return false;
+  const expected = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+  return signatureMatches(expected, received);
+}
+function parseMeta(platform, body) {
+  const payload = body;
+  const events = [];
+  for (const entry of payload.entry ?? []) {
+    for (const m of entry.messaging ?? []) {
+      if (m.message?.is_echo) continue;
+      const text = m.message?.text?.trim();
+      const senderId = m.sender?.id;
+      if (!text || !senderId) continue;
+      events.push({
+        eventId: m.message?.mid ?? `${platform}:${senderId}:${m.timestamp ?? Date.now()}`,
+        kind: "message",
+        message: {
+          platform,
+          externalMessageId: m.message?.mid ?? `${senderId}:${m.timestamp ?? Date.now()}`,
+          senderExternalId: senderId,
+          text,
+          sentAt: m.timestamp ? new Date(m.timestamp) : /* @__PURE__ */ new Date()
+        }
+      });
+    }
+    for (const change of entry.changes ?? []) {
+      const v = change.value ?? {};
+      if (change.field === "leadgen" && v.leadgen_id) {
+        events.push({
+          eventId: `leadgen:${v.leadgen_id}`,
+          kind: "lead",
+          lead: {
+            platform,
+            externalLeadId: v.leadgen_id,
+            formId: v.form_id ?? "unknown",
+            formName: v.form_name ?? null,
+            fields: Object.fromEntries((v.field_data ?? []).map((f) => [f.name ?? "", f.values?.[0] ?? ""])),
+            createdAt: v.created_time ? new Date(v.created_time * 1e3) : /* @__PURE__ */ new Date()
+          }
+        });
+      }
+      if (change.field === "comments" && v.comment_id && v.message?.trim()) {
+        events.push({
+          eventId: `comment:${v.comment_id}`,
+          kind: "comment",
+          message: {
+            platform,
+            externalMessageId: v.comment_id,
+            senderExternalId: v.from?.id ?? v.comment_id,
+            senderName: v.from?.name ?? null,
+            text: v.message.trim()
+          }
+        });
+      }
+    }
+  }
+  return events;
+}
+var instagramAdapter, facebookAdapter, tiktokAdapter, ADAPTERS;
+var init_adapters = __esm({
+  "src/integrations/adapters.ts"() {
+    "use strict";
+    init_env();
+    init_secretBox();
+    instagramAdapter = {
+      platform: "instagram",
+      verify: verifyMeta,
+      parse: (body) => parseMeta("instagram", body)
+    };
+    facebookAdapter = {
+      platform: "facebook",
+      verify: verifyMeta,
+      parse: (body) => parseMeta("facebook", body)
+    };
+    tiktokAdapter = {
+      platform: "tiktok",
+      verify(rawBody, headers) {
+        const secret = env.TIKTOK_APP_SECRET;
+        if (!secret) return false;
+        const header = headers["tiktok-signature"] ?? headers["x-tiktok-signature"];
+        const received = Array.isArray(header) ? header[0] : header;
+        if (!received) return false;
+        const parts = Object.fromEntries(
+          received.split(",").map((p) => {
+            const [k, v] = p.trim().split("=");
+            return [k, v ?? ""];
+          })
+        );
+        if (!parts.t || !parts.s) return false;
+        const expected = createHmac("sha256", secret).update(`${parts.t}.${rawBody.toString("utf8")}`).digest("hex");
+        return signatureMatches(expected, parts.s);
+      },
+      parse(body) {
+        const payload = body;
+        const d = payload.data;
+        if (!d?.lead_id) return [];
+        return [
+          {
+            eventId: `tiktok-lead:${d.lead_id}`,
+            kind: "lead",
+            lead: {
+              platform: "tiktok",
+              externalLeadId: d.lead_id,
+              formId: d.form_id ?? d.page_id ?? "unknown",
+              formName: d.form_name ?? null,
+              fields: Object.fromEntries((d.field_data ?? []).map((f) => [f.name ?? "", f.values?.[0] ?? ""])),
+              createdAt: d.create_time ? new Date(d.create_time * 1e3) : /* @__PURE__ */ new Date()
+            }
+          }
+        ];
+      }
+    };
+    ADAPTERS = {
+      instagram: instagramAdapter,
+      facebook: facebookAdapter,
+      tiktok: tiktokAdapter
+    };
+  }
+});
+
+// src/routes/webhooks.ts
+import { Router as Router6 } from "express";
+function platformOf2(req) {
+  const raw = String(req.params.platform ?? "");
+  return INTEGRATION_PLATFORMS.includes(raw) ? raw : null;
+}
+var webhooksRouter;
+var init_webhooks = __esm({
+  "src/routes/webhooks.ts"() {
+    "use strict";
+    init_src();
+    init_env();
+    init_adapters();
+    init_ingest();
+    init_secretBox();
+    init_logger();
+    webhooksRouter = Router6();
+    webhooksRouter.get("/:platform", (req, res) => {
+      const platform = platformOf2(req);
+      if (!platform) return res.status(404).json({ error: "Unknown platform" });
+      const mode = String(req.query["hub.mode"] ?? "");
+      const token = String(req.query["hub.verify_token"] ?? "");
+      const challenge = String(req.query["hub.challenge"] ?? "");
+      if (mode !== "subscribe" || !env.META_VERIFY_TOKEN || !signatureMatches(env.META_VERIFY_TOKEN, token)) {
+        logger.warn({ platform, mode }, "Rejected webhook verification handshake");
+        return res.sendStatus(403);
+      }
+      logger.info({ platform }, "Webhook subscription verified");
+      return res.type("text/plain").send(challenge);
+    });
+    webhooksRouter.post("/:platform", async (req, res) => {
+      const platform = platformOf2(req);
+      if (!platform) return res.status(404).json({ error: "Unknown platform" });
+      const adapter = ADAPTERS[platform];
+      const raw = req.rawBody ?? Buffer.from(JSON.stringify(req.body ?? {}));
+      if (!adapter.verify(raw, req.headers)) {
+        logger.warn({ platform }, "Rejected webhook with an invalid signature");
+        return res.sendStatus(401);
+      }
+      const events = adapter.parse(req.body);
+      res.sendStatus(200);
+      for (const event of events) {
+        await processOnce(
+          { platform, eventId: event.eventId, kind: event.kind, source: "webhook", payload: req.body },
+          async () => {
+            if (event.lead) return ingestLead(event.lead);
+            if (event.message) return ingestMessage(event.message);
+            throw new Error("Event carried neither a message nor a lead");
+          }
+        );
+      }
+    });
+  }
+});
+
+// src/routes/cron.ts
+import { timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { Router as Router7 } from "express";
 function equals(a, b) {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
-  return left.length === right.length && timingSafeEqual(left, right);
+  return left.length === right.length && timingSafeEqual2(left, right);
 }
 function assertScheduler(req) {
   if (!env.CRON_SECRET) throw new HttpError(404, "Not found");
@@ -6296,14 +7233,14 @@ var init_cron = __esm({
     init_jobs();
     init_errors();
     init_logger();
-    cronRouter = Router5();
+    cronRouter = Router7();
     cronRouter.get("/daily", runDaily);
     cronRouter.post("/daily", runDaily);
   }
 });
 
 // src/routes/dashboard.ts
-import { Router as Router6 } from "express";
+import { Router as Router8 } from "express";
 import { Types as Types4 } from "mongoose";
 var dashboardRouter;
 var init_dashboard = __esm({
@@ -6313,7 +7250,7 @@ var init_dashboard = __esm({
     init_auth();
     init_models();
     init_serializers();
-    dashboardRouter = Router6();
+    dashboardRouter = Router8();
     dashboardRouter.use(requireAuth);
     dashboardRouter.get("/", async (req, res) => {
       const scope2 = req.user.role === "admin" ? {} : { owner: new Types4.ObjectId(req.user.id) };
@@ -6337,12 +7274,12 @@ var init_dashboard = __esm({
         count: stageMap.get(stage)?.count ?? 0,
         value: stageMap.get(stage)?.value ?? 0
       }));
-      const open = pipeline.filter((p) => OPEN_STAGES.includes(p.stage));
+      const open2 = pipeline.filter((p) => OPEN_STAGES.includes(p.stage));
       res.json({
         pipeline,
         totals: {
-          openDeals: open.reduce((a, p) => a + p.count, 0),
-          openValue: open.reduce((a, p) => a + p.value, 0),
+          openDeals: open2.reduce((a, p) => a + p.count, 0),
+          openValue: open2.reduce((a, p) => a + p.value, 0),
           wonValue: stageMap.get("Won")?.value ?? 0,
           contacts,
           atRisk: atRiskCount
@@ -6357,7 +7294,7 @@ var init_dashboard = __esm({
 });
 
 // src/routes/deals.ts
-import { Router as Router7 } from "express";
+import { Router as Router9 } from "express";
 var dealsRouter, SORTABLE2;
 var init_deals2 = __esm({
   "src/routes/deals.ts"() {
@@ -6376,7 +7313,7 @@ var init_deals2 = __esm({
     init_deals();
     init_email();
     init_serializers();
-    dealsRouter = Router7();
+    dealsRouter = Router9();
     dealsRouter.use(requireAuth);
     SORTABLE2 = /* @__PURE__ */ new Set(["title", "value", "stage", "score", "expectedCloseDate", "lastActivityAt", "createdAt", "updatedAt", "stageEnteredAt"]);
     dealsRouter.get("/", validateQuery(listQuerySchema), async (req, res) => {
@@ -6540,8 +7477,8 @@ var init_merge = __esm({
 });
 
 // src/routes/duplicates.ts
-import { Router as Router8 } from "express";
-import { z as z12 } from "zod";
+import { Router as Router10 } from "express";
+import { z as z13 } from "zod";
 var duplicatesRouter, listQuery;
 var init_duplicates2 = __esm({
   "src/routes/duplicates.ts"() {
@@ -6553,11 +7490,11 @@ var init_duplicates2 = __esm({
     init_models();
     init_merge();
     init_serializers();
-    duplicatesRouter = Router8();
+    duplicatesRouter = Router10();
     duplicatesRouter.use(requireRole("admin"));
-    listQuery = z12.object({
-      status: z12.enum(["pending", "merged", "dismissed", "all"]).default("pending"),
-      limit: z12.coerce.number().int().min(1).max(200).default(50)
+    listQuery = z13.object({
+      status: z13.enum(["pending", "merged", "dismissed", "all"]).default("pending"),
+      limit: z13.coerce.number().int().min(1).max(200).default(50)
     });
     duplicatesRouter.get("/", validateQuery(listQuery), async (_req, res) => {
       const q = parsedQuery(res);
@@ -6585,7 +7522,7 @@ var init_duplicates2 = __esm({
 });
 
 // src/routes/meetings.ts
-import { Router as Router9 } from "express";
+import { Router as Router11 } from "express";
 var meetingsRouter;
 var init_meetings = __esm({
   "src/routes/meetings.ts"() {
@@ -6596,7 +7533,7 @@ var init_meetings = __esm({
     init_queue();
     init_models();
     init_serializers();
-    meetingsRouter = Router9();
+    meetingsRouter = Router11();
     meetingsRouter.use(requireAuth);
     meetingsRouter.get("/:id", async (req, res) => {
       const meeting = await Meeting.findOne({ _id: idParam(req), ...ownerScope(req) }).select("-transcript").lean();
@@ -6622,8 +7559,8 @@ var init_meetings = __esm({
 });
 
 // src/routes/notes.ts
-import { Router as Router10 } from "express";
-import { z as z13 } from "zod";
+import { Router as Router12 } from "express";
+import { z as z14 } from "zod";
 var notesRouter, notesQuery;
 var init_notes = __esm({
   "src/routes/notes.ts"() {
@@ -6638,12 +7575,12 @@ var init_notes = __esm({
     init_deals();
     init_serializers();
     init_semanticSearch();
-    notesRouter = Router10();
+    notesRouter = Router12();
     notesRouter.use(requireAuth);
-    notesQuery = z13.object({
+    notesQuery = z14.object({
       deal: objectIdSchema.optional(),
       contact: objectIdSchema.optional(),
-      limit: z13.coerce.number().int().min(1).max(500).default(100)
+      limit: z14.coerce.number().int().min(1).max(500).default(100)
     });
     notesRouter.get("/", validateQuery(notesQuery), async (req, res) => {
       const q = parsedQuery(res);
@@ -6687,8 +7624,8 @@ var init_notes = __esm({
 });
 
 // src/routes/tasks.ts
-import { Router as Router11 } from "express";
-import { z as z14 } from "zod";
+import { Router as Router13 } from "express";
+import { z as z15 } from "zod";
 var tasksRouter, tasksQuery;
 var init_tasks = __esm({
   "src/routes/tasks.ts"() {
@@ -6701,13 +7638,13 @@ var init_tasks = __esm({
     init_contacts();
     init_deals();
     init_serializers();
-    tasksRouter = Router11();
+    tasksRouter = Router13();
     tasksRouter.use(requireAuth);
-    tasksQuery = z14.object({
+    tasksQuery = z15.object({
       deal: objectIdSchema.optional(),
       contact: objectIdSchema.optional(),
-      done: z14.enum(["true", "false"]).optional(),
-      limit: z14.coerce.number().int().min(1).max(500).default(200)
+      done: z15.enum(["true", "false"]).optional(),
+      limit: z15.coerce.number().int().min(1).max(500).default(200)
     });
     tasksRouter.get("/", validateQuery(tasksQuery), async (req, res) => {
       const q = parsedQuery(res);
@@ -6773,8 +7710,19 @@ function createApp() {
   app.disable("x-powered-by");
   app.use(helmet());
   app.use(cors({ origin: env.WEB_ORIGIN, credentials: true }));
-  app.use(express.json({ limit: "2mb" }));
+  app.use(
+    express.json({
+      limit: "2mb",
+      // Webhook signatures are computed over the exact bytes sent. Re-serialising
+      // the parsed object changes key order and whitespace, and the signature
+      // stops matching, so the original buffer is kept for those routes.
+      verify: (req, _res, buf) => {
+        req.rawBody = buf;
+      }
+    })
+  );
   app.use(cookieParser());
+  app.use("/api/webhooks", webhooksRouter);
   app.use(authenticate);
   app.get("/api/health", (_req, res) => res.json({ ok: true, time: (/* @__PURE__ */ new Date()).toISOString() }));
   app.use("/api/auth", authRouter);
@@ -6788,6 +7736,7 @@ function createApp() {
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/admin", adminRouter);
   app.use("/api/cron", cronRouter);
+  app.use("/api/integrations", integrationsRouter);
   app.use((_req, _res, next) => next(new HttpError(404, "Not found")));
   app.use(errorHandler);
   return app;
@@ -6802,6 +7751,8 @@ var init_app = __esm({
     init_ai();
     init_auth2();
     init_contacts2();
+    init_integrations();
+    init_webhooks();
     init_cron();
     init_dashboard();
     init_deals2();

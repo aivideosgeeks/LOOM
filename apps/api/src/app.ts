@@ -9,6 +9,8 @@ import { adminRouter } from "./routes/admin";
 import { aiRouter } from "./routes/ai";
 import { authRouter } from "./routes/auth";
 import { contactsRouter } from "./routes/contacts";
+import { integrationsRouter } from "./routes/integrations";
+import { webhooksRouter } from "./routes/webhooks";
 import { cronRouter } from "./routes/cron";
 import { dashboardRouter } from "./routes/dashboard";
 import { dealsRouter } from "./routes/deals";
@@ -23,8 +25,22 @@ export function createApp() {
   app.disable("x-powered-by");
   app.use(helmet());
   app.use(cors({ origin: env.WEB_ORIGIN, credentials: true }));
-  app.use(express.json({ limit: "2mb" }));
+  app.use(
+    express.json({
+      limit: "2mb",
+      // Webhook signatures are computed over the exact bytes sent. Re-serialising
+      // the parsed object changes key order and whitespace, and the signature
+      // stops matching, so the original buffer is kept for those routes.
+      verify: (req, _res, buf) => {
+        (req as express.Request & { rawBody?: Buffer }).rawBody = buf;
+      },
+    }),
+  );
   app.use(cookieParser());
+  // Mounted before session auth: a platform webhook has no cookie, and proves
+  // itself with a signature instead.
+  app.use("/api/webhooks", webhooksRouter);
+
   app.use(authenticate);
 
   app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
@@ -39,6 +55,7 @@ export function createApp() {
   app.use("/api/dashboard", dashboardRouter);
   app.use("/api/admin", adminRouter);
   app.use("/api/cron", cronRouter);
+  app.use("/api/integrations", integrationsRouter);
 
   app.use((_req, _res, next) => next(new HttpError(404, "Not found")));
   app.use(errorHandler);

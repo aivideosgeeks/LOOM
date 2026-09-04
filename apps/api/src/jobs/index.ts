@@ -9,6 +9,10 @@ export async function startJobs() {
   await queue.schedule("risk-daily", "risk.scan", {}, env.RISK_SCAN_CRON);
   await queue.schedule("score-daily", "score.scanAll", {}, "0 5 * * *");
   await queue.schedule("dedupe-nightly", "dedupe.scanAll", {}, "30 5 * * *");
+  // Runs whether or not a webhook subscription succeeded, because on TikTok it
+  // frequently does not and a fallback nobody exercises is not a fallback.
+  await queue.schedule("integration-poll", "integration.poll", {}, env.INTEGRATION_POLL_CRON);
+  await queue.schedule("integration-retry", "integration.retry", {}, "*/30 * * * *");
   // Skipped on the inline adapter: there it would run two whole-collection
   // scans inside the first request of every cold start. Platform cron calls
   // /api/cron/daily instead.

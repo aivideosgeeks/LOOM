@@ -61,6 +61,12 @@ export async function handleJob(job: JobEnvelope): Promise<void> {
     case "dedupe.scanAll":
       await scanAllContactsForDuplicates();
       return;
+    case "integration.poll":
+      await (await import("../integrations/poll")).pollAllPlatforms();
+      return;
+    case "integration.retry":
+      await (await import("../integrations/poll")).retryFailedEvents();
+      return;
     case "risk.scan":
       await scanAllDealsForRisk();
       return;
