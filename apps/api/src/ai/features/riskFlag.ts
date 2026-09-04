@@ -7,6 +7,7 @@ import { logger } from "../../lib/logger";
 import { Deal, Note } from "../../models";
 import { callStructured } from "../gateway";
 import { RISK_REASON_SYSTEM } from "../prompts";
+import { notify } from "../../services/notifications";
 import { sanitizeText, wrapData } from "../sanitize";
 
 export const riskReasonSchema = z.object({
@@ -156,10 +157,26 @@ export async function assessDealRisk(dealId: string, opts: { force?: boolean } =
     };
   }
 
+  const newlyAtRisk = flag?.atRisk && !previous?.atRisk;
+
   deal.risk = flag;
   deal.riskHash = hash;
   deal.markModified("risk");
   await deal.save();
+
+  // Only on the transition. A deal that stays risky across nightly scans would
+  // otherwise notify every night until someone fixed it.
+  if (newlyAtRisk) {
+    await notify({
+      userId: String(deal.owner),
+      kind: "deal_risk",
+      title: `${deal.title} is at risk`,
+      body: flag!.aiReason ?? flag!.reasons.join(" "),
+      href: `/deals/${String(deal._id)}`,
+      dedupeKey: `deal_risk:${String(deal._id)}`,
+    });
+  }
+
   return flag;
 }
 

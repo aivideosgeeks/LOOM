@@ -53,3 +53,15 @@ export const PLATFORM_CAPABILITIES: Record<
   // TikTok's webhook tier is inconsistent, so polling is a first-class path rather than a fallback nobody built.
   tiktok: { messaging: false, leadForms: true, comments: false, pollingFallback: true, label: "TikTok" },
 };
+
+/** Things worth telling someone about, as opposed to everything that happens. */
+export const NOTIFICATION_KINDS = [
+  "deal_risk",
+  "lead_received",
+  "message_received",
+  "duplicate_found",
+  "task_due",
+  "meeting_summarized",
+  "integration_error",
+] as const;
+export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];

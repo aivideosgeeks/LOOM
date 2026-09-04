@@ -17,6 +17,7 @@ import { dealsRouter } from "./routes/deals";
 import { duplicatesRouter } from "./routes/duplicates";
 import { meetingsRouter } from "./routes/meetings";
 import { notesRouter } from "./routes/notes";
+import { notificationsRouter } from "./routes/notifications";
 import { tasksRouter } from "./routes/tasks";
 
 export function createApp() {
@@ -56,6 +57,7 @@ export function createApp() {
   app.use("/api/admin", adminRouter);
   app.use("/api/cron", cronRouter);
   app.use("/api/integrations", integrationsRouter);
+  app.use("/api/notifications", notificationsRouter);
 
   app.use((_req, _res, next) => next(new HttpError(404, "Not found")));
   app.use(errorHandler);

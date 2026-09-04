@@ -74,6 +74,9 @@ export const jobs = {
   async retryIntegrationEvents() {
     await (await getQueue()).add("integration.retry", {}, { jobId: `integration.retry:${Date.now()}` });
   },
+  async refreshIntegrationTokens() {
+    await (await getQueue()).add("integration.refresh", {}, { jobId: `integration.refresh:${Date.now()}` });
+  },
   async rescoreAll() {
     await (await getQueue()).add("score.scanAll", {}, { jobId: `score.scanAll:${Date.now()}` });
   },

@@ -51,8 +51,12 @@ var init_env = __esm({
       JWT_SECRET: z.string().default("dev-only-change-me-please"),
       /** Encrypts third-party access tokens at rest. Falls back to JWT_SECRET when unset. */
       INTEGRATION_SECRET: z.string().optional(),
-      /** Verifies inbound Meta webhooks and answers their subscription handshake. */
+      /** OAuth client credentials. The secret also verifies inbound Meta webhook signatures. */
+      META_APP_ID: z.string().optional(),
       META_APP_SECRET: z.string().optional(),
+      TIKTOK_APP_ID: z.string().optional(),
+      /** Where platforms redirect back to. Defaults to WEB_ORIGIN, which proxies /api. */
+      PUBLIC_API_URL: z.string().optional(),
       META_VERIFY_TOKEN: z.string().optional(),
       TIKTOK_APP_SECRET: z.string().optional(),
       /** How often the polling fallback runs, for platforms whose webhooks cannot be trusted. */
@@ -239,7 +243,7 @@ var init_auth = __esm({
 });
 
 // ../../packages/shared/src/constants.ts
-var PIPELINE_STAGES, OPEN_STAGES, CLOSED_STAGES, ROLES, NOTE_KINDS, ENGAGEMENT_KINDS, AI_FEATURES, STAGE_STALL_THRESHOLD_DAYS, EMAIL_TONES, INTEGRATION_PLATFORMS, PLATFORM_CAPABILITIES;
+var PIPELINE_STAGES, OPEN_STAGES, CLOSED_STAGES, ROLES, NOTE_KINDS, ENGAGEMENT_KINDS, AI_FEATURES, STAGE_STALL_THRESHOLD_DAYS, EMAIL_TONES, INTEGRATION_PLATFORMS, PLATFORM_CAPABILITIES, NOTIFICATION_KINDS;
 var init_constants = __esm({
   "../../packages/shared/src/constants.ts"() {
     "use strict";
@@ -276,6 +280,15 @@ var init_constants = __esm({
       // TikTok's webhook tier is inconsistent, so polling is a first-class path rather than a fallback nobody built.
       tiktok: { messaging: false, leadForms: true, comments: false, pollingFallback: true, label: "TikTok" }
     };
+    NOTIFICATION_KINDS = [
+      "deal_risk",
+      "lead_received",
+      "message_received",
+      "duplicate_found",
+      "task_due",
+      "meeting_summarized",
+      "integration_error"
+    ];
   }
 });
 
@@ -1342,6 +1355,9 @@ var init_queue = __esm({
       async retryIntegrationEvents() {
         await (await getQueue()).add("integration.retry", {}, { jobId: `integration.retry:${Date.now()}` });
       },
+      async refreshIntegrationTokens() {
+        await (await getQueue()).add("integration.refresh", {}, { jobId: `integration.refresh:${Date.now()}` });
+      },
       async rescoreAll() {
         await (await getQueue()).add("score.scanAll", {}, { jobId: `score.scanAll:${Date.now()}` });
       }
@@ -1817,17 +1833,17 @@ var init_hash = __esm({
 });
 
 // src/ai/costs.ts
-function estimateCostUsd(model11, usage) {
-  if (FREE_MODEL_PATTERNS.some((re) => re.test(model11))) return 0;
-  const price = PRICES[model11];
+function estimateCostUsd(model12, usage) {
+  if (FREE_MODEL_PATTERNS.some((re) => re.test(model12))) return 0;
+  const price = PRICES[model12];
   if (!price) return 0;
   const cacheRead = price.cacheRead ?? price.input * 0.1;
   const cacheWrite = price.cacheWrite ?? price.input * 1.25;
   const cost = (usage.inputTokens * price.input + usage.outputTokens * price.output + usage.cacheReadTokens * cacheRead + usage.cacheWriteTokens * cacheWrite) / 1e6;
   return Math.round(cost * 1e6) / 1e6;
 }
-function estimateEmbeddingCostUsd(model11, tokens) {
-  const perM = EMBEDDING_PRICES[model11] ?? 0;
+function estimateEmbeddingCostUsd(model12, tokens) {
+  const perM = EMBEDDING_PRICES[model12] ?? 0;
   return Math.round(tokens * perM / 1e6 * 1e6) / 1e6;
 }
 var FREE_MODEL_PATTERNS, PRICES, EMBEDDING_PRICES;
@@ -2057,8 +2073,8 @@ var init_anthropic = __esm({
       model;
       configured = true;
       client;
-      constructor(apiKey, model11) {
-        this.model = model11;
+      constructor(apiKey, model12) {
+        this.model = model12;
         this.client = new Anthropic({ apiKey, timeout: env.AI_TIMEOUT_MS, maxRetries: 1 });
       }
       async generateStructured(req) {
@@ -2224,8 +2240,8 @@ var init_openaiCompatible = __esm({
     init_logger();
     init_types2();
     OpenAiCompatibleProvider = class {
-      constructor(model11, apiKey, baseUrl, label, referer) {
-        this.model = model11;
+      constructor(model12, apiKey, baseUrl, label, referer) {
+        this.model = model12;
         this.apiKey = apiKey;
         this.baseUrl = baseUrl;
         this.label = label;
@@ -3716,6 +3732,129 @@ var init_meetingSummary = __esm({
   }
 });
 
+// src/services/email.ts
+function transport() {
+  if (!env.SMTP_URL) return Promise.resolve(null);
+  transportPromise ??= (async () => {
+    const nodemailer = await import("nodemailer");
+    const t = nodemailer.createTransport(env.SMTP_URL);
+    try {
+      await t.verify();
+      logger.info("SMTP transport verified");
+    } catch (err) {
+      logger.error({ err }, "SMTP credentials were rejected. Email will fall back to on-screen links.");
+      return null;
+    }
+    return t;
+  })();
+  return transportPromise;
+}
+async function sendEmail(mail) {
+  if (!env.SMTP_URL) return { sent: false, detail: "SMTP is not configured; the link is shown on screen instead." };
+  try {
+    const t = await transport();
+    if (!t) return { sent: false, detail: "SMTP is configured but was rejected; check the credentials." };
+    await t.sendMail({
+      from: env.SMTP_FROM,
+      to: mail.to,
+      subject: mail.subject,
+      text: mail.body,
+      // A plain-text alternative alongside a simple HTML body: some clients hide
+      // bare URLs in text/plain, which is how an invitation link goes missing.
+      html: htmlBody(mail.body)
+    });
+    return { sent: true, detail: "Sent." };
+  } catch (err) {
+    logger.error({ err, to: mail.to }, "SMTP send failed");
+    return { sent: false, detail: `Could not send: ${err instanceof Error ? err.message : String(err)}` };
+  }
+}
+function htmlBody(text) {
+  const escaped = text.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
+  const linked = escaped.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1">$1</a>');
+  return `<div style="font:15px/1.6 system-ui,sans-serif;color:#1a1a1a">${linked.replace(/\n/g, "<br>")}</div>`;
+}
+var transportPromise;
+var init_email = __esm({
+  "src/services/email.ts"() {
+    "use strict";
+    init_env();
+    init_logger();
+    transportPromise = null;
+  }
+});
+
+// src/services/notifications.ts
+import { Schema as Schema11, model as model11 } from "mongoose";
+async function notify(input) {
+  try {
+    if (input.dedupeKey) {
+      const since = new Date(Date.now() - REPEAT_AFTER_MS);
+      const existing = await Notification.findOne({ user: input.userId, dedupeKey: input.dedupeKey, createdAt: { $gte: since } });
+      if (existing) return null;
+    }
+    const doc = await Notification.create({
+      user: input.userId,
+      kind: input.kind,
+      title: input.title,
+      body: input.body ?? "",
+      href: input.href ?? null,
+      dedupeKey: input.dedupeKey ?? null,
+      expiresAt: new Date(Date.now() + TTL_MS)
+    });
+    if (input.email) void emailNotification(input).catch(() => void 0);
+    return doc;
+  } catch (err) {
+    logger.warn({ err, kind: input.kind }, "Could not record notification");
+    return null;
+  }
+}
+async function emailNotification(input) {
+  const user = await User.findById(input.userId).select("email name").lean();
+  if (!user?.email) return;
+  const link = input.href ? `${env.WEB_ORIGIN.replace(/\/$/, "")}${input.href}` : env.WEB_ORIGIN;
+  await sendEmail({
+    to: user.email,
+    subject: input.title,
+    body: [input.body, "", link].filter(Boolean).join("\n")
+  });
+}
+var notificationSchema, Notification, TTL_MS, REPEAT_AFTER_MS;
+var init_notifications = __esm({
+  "src/services/notifications.ts"() {
+    "use strict";
+    init_src();
+    init_logger();
+    init_models();
+    init_email();
+    init_env();
+    notificationSchema = new Schema11(
+      {
+        user: { type: Schema11.Types.ObjectId, ref: "User", required: true, index: true },
+        kind: { type: String, enum: NOTIFICATION_KINDS, required: true },
+        title: { type: String, required: true },
+        body: { type: String, default: "" },
+        /** Where clicking it should go. */
+        href: { type: String, default: null },
+        readAt: { type: Date, default: null },
+        /**
+         * Collapses repeats. A deal that stays risky across three nightly scans
+         * should not produce three identical rows.
+         */
+        dedupeKey: { type: String, default: null },
+        expiresAt: { type: Date, required: true }
+      },
+      { timestamps: { createdAt: true, updatedAt: false } }
+    );
+    notificationSchema.index({ user: 1, readAt: 1, createdAt: -1 });
+    notificationSchema.index({ user: 1, dedupeKey: 1 });
+    notificationSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+    Notification = model11("Notification", notificationSchema);
+    TTL_MS = 60 * 864e5;
+    REPEAT_AFTER_MS = 7 * 864e5;
+  }
+});
+
 // src/ai/features/riskFlag.ts
 import { z as z9 } from "zod";
 function evaluateRiskSignals(inputs) {
@@ -3825,10 +3964,21 @@ ${noteBlocks}` : "No notes recorded."
       checkedAt: now.toISOString()
     };
   }
+  const newlyAtRisk = flag?.atRisk && !previous?.atRisk;
   deal.risk = flag;
   deal.riskHash = hash;
   deal.markModified("risk");
   await deal.save();
+  if (newlyAtRisk) {
+    await notify({
+      userId: String(deal.owner),
+      kind: "deal_risk",
+      title: `${deal.title} is at risk`,
+      body: flag.aiReason ?? flag.reasons.join(" "),
+      href: `/deals/${String(deal._id)}`,
+      dedupeKey: `deal_risk:${String(deal._id)}`
+    });
+  }
   return flag;
 }
 async function scanAllDealsForRisk() {
@@ -3857,6 +4007,7 @@ var init_riskFlag = __esm({
     init_models();
     init_gateway();
     init_prompts();
+    init_notifications();
     init_sanitize();
     riskReasonSchema = z9.object({
       reason: z9.string(),
@@ -4012,15 +4163,15 @@ async function postJson(url, headers, body, timeoutMs = 2e4) {
   if (!res.ok) throw new Error(`${url} responded ${res.status}: ${(await res.text()).slice(0, 200)}`);
   return res.json();
 }
-async function logEmbeddingUsage(provider3, model11, tokens, latencyMs, error) {
+async function logEmbeddingUsage(provider3, model12, tokens, latencyMs, error) {
   try {
     await AiUsage.create({
       feature: "semantic_search",
       provider: provider3,
-      model: model11,
+      model: model12,
       status: error ? "error" : "ok",
       inputTokens: tokens,
-      estCostUsd: estimateEmbeddingCostUsd(model11, tokens),
+      estCostUsd: estimateEmbeddingCostUsd(model12, tokens),
       latencyMs,
       error
     });
@@ -4061,8 +4212,8 @@ var init_provider2 = __esm({
       name = "local";
       model;
       loader = null;
-      constructor(model11) {
-        this.model = model11;
+      constructor(model12) {
+        this.model = model12;
       }
       load() {
         if (!this.loader) {
@@ -4095,9 +4246,9 @@ var init_provider2 = __esm({
       }
     };
     VoyageProvider = class {
-      constructor(apiKey, model11) {
+      constructor(apiKey, model12) {
         this.apiKey = apiKey;
-        this.model = model11;
+        this.model = model12;
       }
       apiKey;
       model;
@@ -4118,9 +4269,9 @@ var init_provider2 = __esm({
       }
     };
     OpenAIProvider = class {
-      constructor(apiKey, model11) {
+      constructor(apiKey, model12) {
         this.apiKey = apiKey;
-        this.model = model11;
+        this.model = model12;
       }
       apiKey;
       model;
@@ -4198,11 +4349,11 @@ var init_vectorStore = __esm({
     MongoVectorStore = class {
       name = "mongo";
       cache = /* @__PURE__ */ new Map();
-      async upsert(model11, items) {
+      async upsert(model12, items) {
         await Promise.all(
           items.map(
             (item) => NoteEmbedding.updateOne(
-              { note: new Types.ObjectId(item.id), model: model11 },
+              { note: new Types.ObjectId(item.id), model: model12 },
               {
                 $set: {
                   dims: item.vector.length,
@@ -4217,12 +4368,12 @@ var init_vectorStore = __esm({
             )
           )
         );
-        this.cache.delete(model11);
+        this.cache.delete(model12);
       }
-      async load(model11) {
-        const hit = this.cache.get(model11);
+      async load(model12) {
+        const hit = this.cache.get(model12);
         if (hit) return hit;
-        const rows = await NoteEmbedding.find({ model: model11 }).select("note owner vec vector").lean();
+        const rows = await NoteEmbedding.find({ model: model12 }).select("note owner vec vector").lean();
         const loaded = [];
         for (const r of rows) {
           const raw = r;
@@ -4230,11 +4381,11 @@ var init_vectorStore = __esm({
           if (!vec || !vec.length) continue;
           loaded.push({ id: String(raw.note), owner: String(raw.owner), vec });
         }
-        this.cache.set(model11, loaded);
+        this.cache.set(model12, loaded);
         return loaded;
       }
-      async query(model11, vector, topK, filter) {
-        const rows = await this.load(model11);
+      async query(model12, vector, topK, filter) {
+        const rows = await this.load(model12);
         const probe = normalize(vector);
         const scored = [];
         for (const row of rows) {
@@ -4243,9 +4394,9 @@ var init_vectorStore = __esm({
         }
         return scored.sort((x, y) => y.score - x.score).slice(0, topK);
       }
-      async remove(model11, ids) {
-        await NoteEmbedding.deleteMany({ model: model11, note: { $in: ids.map((id) => new Types.ObjectId(id)) } });
-        this.cache.delete(model11);
+      async remove(model12, ids) {
+        await NoteEmbedding.deleteMany({ model: model12, note: { $in: ids.map((id) => new Types.ObjectId(id)) } });
+        this.cache.delete(model12);
       }
       async healthy() {
         return true;
@@ -4274,9 +4425,9 @@ var init_vectorStore = __esm({
         }
         return this.indexPromise;
       }
-      async upsert(model11, items) {
+      async upsert(model12, items) {
         const idx = await this.index();
-        await idx.namespace(model11).upsert({
+        await idx.namespace(model12).upsert({
           records: items.map((i) => ({
             id: i.id,
             values: i.vector,
@@ -4284,9 +4435,9 @@ var init_vectorStore = __esm({
           }))
         });
       }
-      async query(model11, vector, topK, filter) {
+      async query(model12, vector, topK, filter) {
         const idx = await this.index();
-        const res = await idx.namespace(model11).query({
+        const res = await idx.namespace(model12).query({
           vector,
           topK,
           includeMetadata: false,
@@ -4294,9 +4445,9 @@ var init_vectorStore = __esm({
         });
         return (res.matches ?? []).map((m) => ({ id: m.id, score: m.score ?? 0 }));
       }
-      async remove(model11, ids) {
+      async remove(model12, ids) {
         const idx = await this.index();
-        await idx.namespace(model11).deleteMany({ ids });
+        await idx.namespace(model12).deleteMany({ ids });
       }
       async healthy() {
         try {
@@ -4559,6 +4710,15 @@ async function ingestMessage(input) {
     note: note._id
   });
   await touchActivity(String(deal._id), String(contact._id), sentAt);
+  await notify({
+    userId: String(contact.owner),
+    kind: "message_received",
+    title: `${label} message from ${contact.name}`,
+    body: input.text.length > 140 ? `${input.text.slice(0, 140)}\u2026` : input.text,
+    href: `/contacts/${String(contact._id)}`,
+    // One notification per conversation per week, not one per message.
+    dedupeKey: `message:${String(contact._id)}`
+  });
   return { contactId: String(contact._id), dealId: String(deal._id), created };
 }
 async function ingestLead(input) {
@@ -4600,6 +4760,14 @@ async function ingestLead(input) {
     ownerId: String(contact.owner)
   });
   await touchActivity(String(deal._id), String(contact._id), input.createdAt ?? /* @__PURE__ */ new Date());
+  await notify({
+    userId: String(contact.owner),
+    kind: "lead_received",
+    title: `New ${label} lead: ${contact.name}`,
+    body: input.formName ? `From "${input.formName}"` : "",
+    href: `/deals/${String(deal._id)}`,
+    email: true
+  });
   return { contactId: String(contact._id), dealId: String(deal._id), created };
 }
 function guessField(key2) {
@@ -4653,6 +4821,7 @@ var init_ingest = __esm({
     init_logger();
     init_models();
     init_activity();
+    init_notifications();
     NEW_DEAL_WINDOW_DAYS = 30;
   }
 });
@@ -4774,6 +4943,224 @@ var init_poll = __esm({
   }
 });
 
+// src/integrations/oauth.ts
+var oauth_exports = {};
+__export(oauth_exports, {
+  authorizeUrl: () => authorizeUrl,
+  createState: () => createState,
+  exchangeCode: () => exchangeCode,
+  isConfigured: () => isConfigured,
+  readState: () => readState,
+  redirectUri: () => redirectUri,
+  refreshExpiringTokens: () => refreshExpiringTokens,
+  saveGrant: () => saveGrant,
+  stateMatches: () => stateMatches
+});
+import { randomBytes as randomBytes2 } from "node:crypto";
+function configFor(platform) {
+  switch (platform) {
+    case "facebook":
+      return {
+        authorizeUrl: "https://www.facebook.com/v21.0/dialog/oauth",
+        tokenUrl: "https://graph.facebook.com/v21.0/oauth/access_token",
+        clientId: env.META_APP_ID,
+        clientSecret: env.META_APP_SECRET,
+        scopes: META_SCOPES.facebook
+      };
+    case "instagram":
+      return {
+        authorizeUrl: "https://www.facebook.com/v21.0/dialog/oauth",
+        tokenUrl: "https://graph.facebook.com/v21.0/oauth/access_token",
+        clientId: env.META_APP_ID,
+        clientSecret: env.META_APP_SECRET,
+        scopes: META_SCOPES.instagram
+      };
+    case "tiktok":
+      return {
+        authorizeUrl: "https://business-api.tiktok.com/portal/auth",
+        tokenUrl: "https://business-api.tiktok.com/open_api/v1.3/oauth2/access_token/",
+        clientId: env.TIKTOK_APP_ID,
+        clientSecret: env.TIKTOK_APP_SECRET,
+        scopes: []
+      };
+  }
+}
+function isConfigured(platform) {
+  const c = configFor(platform);
+  return Boolean(c.clientId && c.clientSecret);
+}
+function redirectUri(platform) {
+  const base = env.PUBLIC_API_URL || env.WEB_ORIGIN;
+  return `${base.replace(/\/$/, "")}/api/integrations/${platform}/callback`;
+}
+function createState(platform, userId) {
+  const payload = { platform, userId, nonce: randomBytes2(12).toString("hex"), issuedAt: Date.now() };
+  return encodeURIComponent(seal(JSON.stringify(payload)));
+}
+function readState(raw) {
+  const opened = open(decodeURIComponent(raw));
+  if (!opened) return null;
+  try {
+    const payload = JSON.parse(opened);
+    if (Date.now() - payload.issuedAt > STATE_TTL_MS) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+function authorizeUrl(platform, userId) {
+  const c = configFor(platform);
+  if (!c.clientId) throw new Error(`${platform} is missing its client id.`);
+  const state = createState(platform, userId);
+  if (platform === "tiktok") {
+    const url2 = new URL(c.authorizeUrl);
+    url2.searchParams.set("app_id", c.clientId);
+    url2.searchParams.set("redirect_uri", redirectUri(platform));
+    url2.searchParams.set("state", state);
+    return url2.toString();
+  }
+  const url = new URL(c.authorizeUrl);
+  url.searchParams.set("client_id", c.clientId);
+  url.searchParams.set("redirect_uri", redirectUri(platform));
+  url.searchParams.set("state", state);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("scope", c.scopes.join(","));
+  return url.toString();
+}
+async function exchangeMeta(platform, code) {
+  const c = configFor(platform);
+  const url = new URL(c.tokenUrl);
+  url.searchParams.set("client_id", c.clientId);
+  url.searchParams.set("client_secret", c.clientSecret);
+  url.searchParams.set("redirect_uri", redirectUri(platform));
+  url.searchParams.set("code", code);
+  const res = await fetch(url, { signal: AbortSignal.timeout(2e4) });
+  const json = await res.json();
+  if (!res.ok || !json.access_token) throw new Error(json.error?.message ?? `Token exchange failed (${res.status}).`);
+  const longLived = await exchangeForLongLived(platform, json.access_token).catch(() => null);
+  const userToken = longLived?.token ?? json.access_token;
+  const page = await firstPage(userToken).catch(() => null);
+  return {
+    accessToken: page?.accessToken ?? userToken,
+    expiresAt: longLived?.expiresAt ?? (json.expires_in ? new Date(Date.now() + json.expires_in * 1e3) : null),
+    externalId: page?.id ?? null,
+    externalName: page?.name ?? null
+  };
+}
+async function exchangeForLongLived(platform, token) {
+  const c = configFor(platform);
+  const url = new URL(c.tokenUrl);
+  url.searchParams.set("grant_type", "fb_exchange_token");
+  url.searchParams.set("client_id", c.clientId);
+  url.searchParams.set("client_secret", c.clientSecret);
+  url.searchParams.set("fb_exchange_token", token);
+  const res = await fetch(url, { signal: AbortSignal.timeout(2e4) });
+  const json = await res.json();
+  if (!res.ok || !json.access_token) return null;
+  return {
+    token: json.access_token,
+    expiresAt: json.expires_in ? new Date(Date.now() + json.expires_in * 1e3) : null
+  };
+}
+async function firstPage(userToken) {
+  const res = await fetch(`https://graph.facebook.com/v21.0/me/accounts?access_token=${encodeURIComponent(userToken)}`, {
+    signal: AbortSignal.timeout(2e4)
+  });
+  const json = await res.json();
+  const page = json.data?.[0];
+  if (!page?.id || !page.access_token) return null;
+  return { id: page.id, name: page.name ?? null, accessToken: page.access_token };
+}
+async function exchangeTikTok(code) {
+  const c = configFor("tiktok");
+  const res = await fetch(c.tokenUrl, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ app_id: c.clientId, secret: c.clientSecret, auth_code: code, grant_type: "auth_code" }),
+    signal: AbortSignal.timeout(2e4)
+  });
+  const json = await res.json();
+  if (json.code && json.code !== 0) throw new Error(`TikTok: ${json.message ?? "token exchange failed"}`);
+  if (!json.data?.access_token) throw new Error("TikTok returned no access token.");
+  return {
+    accessToken: json.data.access_token,
+    refreshToken: json.data.refresh_token ?? null,
+    expiresAt: json.data.expires_in ? new Date(Date.now() + json.data.expires_in * 1e3) : null,
+    externalId: json.data.advertiser_ids?.[0] ?? null
+  };
+}
+async function exchangeCode(platform, code) {
+  if (platform === "tiktok") return exchangeTikTok(code);
+  return exchangeMeta(platform, code);
+}
+async function saveGrant(platform, grant, userId) {
+  return Integration.findOneAndUpdate(
+    { platform },
+    {
+      $set: {
+        platform,
+        accessToken: seal(grant.accessToken),
+        refreshToken: grant.refreshToken ? seal(grant.refreshToken) : null,
+        expiresAt: grant.expiresAt ?? null,
+        externalId: grant.externalId ?? null,
+        externalName: grant.externalName ?? null,
+        status: "connected",
+        lastError: null,
+        connectedBy: userId
+      }
+    },
+    { new: true, upsert: true }
+  );
+}
+async function refreshExpiringTokens() {
+  const soon = new Date(Date.now() + REFRESH_WINDOW_MS);
+  const rows = await Integration.find({ status: "connected", expiresAt: { $ne: null, $lte: soon } });
+  let refreshed = 0;
+  let failed = 0;
+  for (const row of rows) {
+    const platform = row.platform;
+    try {
+      if (platform === "tiktok") {
+        throw new Error("TikTok connections must be renewed by reconnecting.");
+      }
+      const token = open(row.accessToken);
+      if (!token) throw new Error("Stored credential could not be decrypted.");
+      const longLived = await exchangeForLongLived(platform, token);
+      if (!longLived) throw new Error("The platform declined to extend this token.");
+      row.accessToken = seal(longLived.token);
+      row.expiresAt = longLived.expiresAt;
+      row.lastError = null;
+      refreshed += 1;
+    } catch (err) {
+      row.status = "error";
+      row.lastError = `Could not refresh: ${err instanceof Error ? err.message : String(err)}. Reconnect the account.`;
+      failed += 1;
+    }
+    await row.save();
+  }
+  if (rows.length > 0) logger.info({ checked: rows.length, refreshed, failed }, "Integration token refresh complete");
+  return { checked: rows.length, refreshed, failed };
+}
+function stateMatches(expected, received) {
+  return signatureMatches(expected, received);
+}
+var META_SCOPES, STATE_TTL_MS, REFRESH_WINDOW_MS;
+var init_oauth = __esm({
+  "src/integrations/oauth.ts"() {
+    "use strict";
+    init_env();
+    init_logger();
+    init_secretBox();
+    init_models();
+    META_SCOPES = {
+      facebook: ["pages_show_list", "pages_messaging", "pages_manage_metadata", "leads_retrieval", "business_management"],
+      instagram: ["instagram_basic", "instagram_manage_messages", "pages_show_list", "pages_manage_metadata"]
+    };
+    STATE_TTL_MS = 10 * 6e4;
+    REFRESH_WINDOW_MS = 3 * 864e5;
+  }
+});
+
 // src/jobs/handlers.ts
 async function enrichNote(noteId) {
   const note = await Note.findById(noteId);
@@ -4830,6 +5217,9 @@ async function handleJob(job) {
     case "integration.retry":
       await (await Promise.resolve().then(() => (init_poll(), poll_exports))).retryFailedEvents();
       return;
+    case "integration.refresh":
+      await (await Promise.resolve().then(() => (init_oauth(), oauth_exports))).refreshExpiringTokens();
+      return;
     case "risk.scan":
       await scanAllDealsForRisk();
       return;
@@ -4876,6 +5266,7 @@ async function startJobs() {
   await queue2.schedule("dedupe-nightly", "dedupe.scanAll", {}, "30 5 * * *");
   await queue2.schedule("integration-poll", "integration.poll", {}, env.INTEGRATION_POLL_CRON);
   await queue2.schedule("integration-retry", "integration.retry", {}, "*/30 * * * *");
+  await queue2.schedule("integration-refresh", "integration.refresh", {}, "0 4 * * *");
   if (env.RISK_SCAN_ON_START && !isTest && queue2.provider !== "inline") {
     await jobs.rescoreAll();
     await jobs.scanRisk();
@@ -4906,9 +5297,9 @@ __export(seed_exports, {
 });
 import bcrypt from "bcryptjs";
 import mongoose2 from "mongoose";
-async function backdateMany(model11, rows) {
+async function backdateMany(model12, rows) {
   if (rows.length === 0) return;
-  await model11.collection.bulkWrite(
+  await model12.collection.bulkWrite(
     rows.map((r) => ({ updateOne: { filter: { _id: r._id }, update: { $set: { createdAt: r.createdAt } } } })),
     { ordered: false }
   );
@@ -6241,29 +6632,8 @@ var init_ai = __esm({
   }
 });
 
-// src/services/email.ts
-async function sendEmail(mail) {
-  if (!env.SMTP_URL) return { sent: false, detail: "SMTP not configured; email logged only." };
-  try {
-    const nodemailer = await import("nodemailer");
-    const transport = nodemailer.createTransport(env.SMTP_URL);
-    await transport.sendMail({ from: env.SMTP_FROM, to: mail.to, subject: mail.subject, text: mail.body });
-    return { sent: true, detail: "Sent via SMTP." };
-  } catch (err) {
-    logger.error({ err }, "SMTP send failed");
-    return { sent: false, detail: `SMTP send failed: ${err instanceof Error ? err.message : String(err)}` };
-  }
-}
-var init_email = __esm({
-  "src/services/email.ts"() {
-    "use strict";
-    init_env();
-    init_logger();
-  }
-});
-
 // src/services/accounts.ts
-import { randomBytes as randomBytes2 } from "node:crypto";
+import { randomBytes as randomBytes3 } from "node:crypto";
 import bcrypt2 from "bcryptjs";
 async function needsSetup() {
   return await User.countDocuments() === 0;
@@ -6306,7 +6676,7 @@ async function createInvite(input, invitedBy) {
   const email = input.email.toLowerCase().trim();
   if (await User.findOne({ email })) throw new HttpError(409, "Someone with that email address already has an account.");
   await Invite.deleteMany({ email, acceptedAt: null });
-  const token = randomBytes2(32).toString("base64url");
+  const token = randomBytes3(32).toString("base64url");
   const invite = await Invite.create({
     email,
     role: input.role,
@@ -6848,6 +7218,17 @@ function toDTO(doc) {
     connectedAt: doc.createdAt.toISOString()
   };
 }
+function closingPage(ok, platform, detail) {
+  const safe = detail.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]);
+  return `<!doctype html><meta charset="utf-8"><title>${ok ? "Connected" : "Connection failed"}</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#0b0f14;color:#e6edf3}
+.card{max-width:34rem;padding:2rem;text-align:center}h1{font-size:1.1rem;margin:0 0 .5rem}p{margin:0;color:#8b98a5}</style>
+<div class="card"><h1>${ok ? "Connected" : "Could not connect"} ${platform}</h1><p>${safe}</p></div>
+<script>
+  try { window.opener && window.opener.postMessage({ source: "loom-oauth", platform: ${JSON.stringify(platform)}, ok: ${ok} }, "*"); } catch (e) {}
+  setTimeout(function () { window.close(); }, ${ok ? 1200 : 6e3});
+</script>`;
+}
 var integrationsRouter, connectSchema, sendSchema;
 var init_integrations = __esm({
   "src/routes/integrations.ts"() {
@@ -6861,10 +7242,20 @@ var init_integrations = __esm({
     init_activity();
     init_contacts();
     init_send();
+    init_oauth();
     integrationsRouter = Router5();
     integrationsRouter.get("/", requireRole("admin"), async (_req, res) => {
       const rows = await Integration.find().sort({ platform: 1 });
       res.json({ integrations: rows.map(toDTO) });
+    });
+    integrationsRouter.get("/:platform/authorize", requireRole("admin"), (req, res) => {
+      const platform = platformOf(req);
+      if (!isConfigured(platform)) {
+        throw badRequest(
+          `${platform} has no client credentials configured. Set its app id and secret on the server, then reload.`
+        );
+      }
+      res.json({ url: authorizeUrl(platform, req.user.id), redirectUri: redirectUri(platform) });
     });
     connectSchema = z12.object({
       accessToken: z12.string().trim().min(10).max(4e3),
@@ -6945,7 +7336,7 @@ var init_integrations = __esm({
         }))
       });
     });
-    integrationsRouter.get("/messages/:id", async (req, res) => {
+    integrationsRouter.get("/messages/:id", requireAuth, async (req, res) => {
       const contact = await loadContactForUser(idParam(req), req.user);
       const rows = await Message.find({ contact: contact._id }).sort({ sentAt: 1 }).limit(200).populate("sentBy", "name").lean();
       res.json({
@@ -6965,7 +7356,7 @@ var init_integrations = __esm({
       platform: z12.enum(INTEGRATION_PLATFORMS),
       text: z12.string().trim().min(1).max(2e3)
     });
-    integrationsRouter.post("/messages/:id", validateBody(sendSchema), async (req, res) => {
+    integrationsRouter.post("/messages/:id", requireAuth, validateBody(sendSchema), async (req, res) => {
       const contact = await loadContactForUser(idParam(req), req.user);
       const platform = req.body.platform;
       const ref = (contact.externalRefs ?? []).find((r) => r.platform === platform);
@@ -7007,7 +7398,7 @@ var init_integrations = __esm({
         }
       });
     });
-    integrationsRouter.get("/threads", async (req, res) => {
+    integrationsRouter.get("/threads", requireAuth, async (req, res) => {
       const scope2 = req.user.role === "admin" ? {} : { owner: req.user.id };
       const contactIds = await Contact.find(scope2).select("_id").lean();
       const rows = await Message.aggregate([
@@ -7022,6 +7413,26 @@ var init_integrations = __esm({
           lastAt: new Date(r.lastAt).toISOString()
         }))
       });
+    });
+    integrationsRouter.get("/:platform/callback", async (req, res) => {
+      const platform = platformOf(req);
+      const code = String(req.query.code ?? req.query.auth_code ?? "");
+      const state = String(req.query.state ?? "");
+      const denied = String(req.query.error ?? req.query.error_description ?? "");
+      const finish = (ok, detail) => res.type("html").send(closingPage(ok, platform, detail));
+      if (denied) return finish(false, "You declined the permission request.");
+      if (!code) return finish(false, "The platform did not return an authorisation code.");
+      const payload = readState(state);
+      if (!payload || payload.platform !== platform) {
+        return finish(false, "This connection link is no longer valid. Start again from Integrations.");
+      }
+      try {
+        const grant = await exchangeCode(platform, code);
+        await saveGrant(platform, grant, payload.userId);
+        return finish(true, grant.externalName ? `Connected ${grant.externalName}.` : "Connected.");
+      } catch (err) {
+        return finish(false, err instanceof Error ? err.message : String(err));
+      }
     });
   }
 });
@@ -7629,9 +8040,55 @@ var init_notes = __esm({
   }
 });
 
-// src/routes/tasks.ts
+// src/routes/notifications.ts
 import { Router as Router13 } from "express";
 import { z as z15 } from "zod";
+var notificationsRouter, listQuery2;
+var init_notifications2 = __esm({
+  "src/routes/notifications.ts"() {
+    "use strict";
+    init_auth();
+    init_validate();
+    init_notifications();
+    notificationsRouter = Router13();
+    notificationsRouter.use(requireAuth);
+    listQuery2 = z15.object({
+      unread: z15.enum(["true", "false"]).optional(),
+      limit: z15.coerce.number().int().min(1).max(100).default(30)
+    });
+    notificationsRouter.get("/", validateQuery(listQuery2), async (req, res) => {
+      const { unread, limit } = parsedQuery(res);
+      const filter = { user: req.user.id };
+      if (unread === "true") filter.readAt = null;
+      const [rows, unreadCount] = await Promise.all([
+        Notification.find(filter).sort({ createdAt: -1 }).limit(limit).lean(),
+        Notification.countDocuments({ user: req.user.id, readAt: null })
+      ]);
+      const items = rows.map((n) => ({
+        id: String(n._id),
+        kind: n.kind,
+        title: n.title,
+        body: n.body ?? "",
+        href: n.href ?? null,
+        readAt: n.readAt ? n.readAt.toISOString() : null,
+        createdAt: n.createdAt.toISOString()
+      }));
+      res.json({ items, unread: unreadCount });
+    });
+    notificationsRouter.post("/:id/read", async (req, res) => {
+      await Notification.updateOne({ _id: idParam(req), user: req.user.id }, { $set: { readAt: /* @__PURE__ */ new Date() } });
+      res.json({ ok: true });
+    });
+    notificationsRouter.post("/read-all", async (req, res) => {
+      const result = await Notification.updateMany({ user: req.user.id, readAt: null }, { $set: { readAt: /* @__PURE__ */ new Date() } });
+      res.json({ ok: true, marked: result.modifiedCount });
+    });
+  }
+});
+
+// src/routes/tasks.ts
+import { Router as Router14 } from "express";
+import { z as z16 } from "zod";
 var tasksRouter, tasksQuery;
 var init_tasks = __esm({
   "src/routes/tasks.ts"() {
@@ -7644,13 +8101,13 @@ var init_tasks = __esm({
     init_contacts();
     init_deals();
     init_serializers();
-    tasksRouter = Router13();
+    tasksRouter = Router14();
     tasksRouter.use(requireAuth);
-    tasksQuery = z15.object({
+    tasksQuery = z16.object({
       deal: objectIdSchema.optional(),
       contact: objectIdSchema.optional(),
-      done: z15.enum(["true", "false"]).optional(),
-      limit: z15.coerce.number().int().min(1).max(500).default(200)
+      done: z16.enum(["true", "false"]).optional(),
+      limit: z16.coerce.number().int().min(1).max(500).default(200)
     });
     tasksRouter.get("/", validateQuery(tasksQuery), async (req, res) => {
       const q = parsedQuery(res);
@@ -7743,6 +8200,7 @@ function createApp() {
   app.use("/api/admin", adminRouter);
   app.use("/api/cron", cronRouter);
   app.use("/api/integrations", integrationsRouter);
+  app.use("/api/notifications", notificationsRouter);
   app.use((_req, _res, next) => next(new HttpError(404, "Not found")));
   app.use(errorHandler);
   return app;
@@ -7765,6 +8223,7 @@ var init_app = __esm({
     init_duplicates2();
     init_meetings();
     init_notes();
+    init_notifications2();
     init_tasks();
   }
 });

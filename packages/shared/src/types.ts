@@ -1,4 +1,4 @@
-import type { AiFeature, IntegrationPlatform, NoteKind, Role, Stage } from "./constants";
+import type { AiFeature, IntegrationPlatform, NoteKind, NotificationKind, Role, Stage } from "./constants";
 
 export interface ScoreBreakdown {
   stagePrior: number;
@@ -266,4 +266,14 @@ export interface SyncLogSummary {
   viaWebhook: number;
   viaPolling: number;
   lastEventAt: string | null;
+}
+
+export interface NotificationDTO {
+  id: string;
+  kind: NotificationKind;
+  title: string;
+  body: string;
+  href: string | null;
+  readAt: string | null;
+  createdAt: string;
 }

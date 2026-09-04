@@ -34,8 +34,12 @@ const envSchema = z.object({
   JWT_SECRET: z.string().default("dev-only-change-me-please"),
   /** Encrypts third-party access tokens at rest. Falls back to JWT_SECRET when unset. */
   INTEGRATION_SECRET: z.string().optional(),
-  /** Verifies inbound Meta webhooks and answers their subscription handshake. */
+  /** OAuth client credentials. The secret also verifies inbound Meta webhook signatures. */
+  META_APP_ID: z.string().optional(),
   META_APP_SECRET: z.string().optional(),
+  TIKTOK_APP_ID: z.string().optional(),
+  /** Where platforms redirect back to. Defaults to WEB_ORIGIN, which proxies /api. */
+  PUBLIC_API_URL: z.string().optional(),
   META_VERIFY_TOKEN: z.string().optional(),
   TIKTOK_APP_SECRET: z.string().optional(),
   /** How often the polling fallback runs, for platforms whose webhooks cannot be trusted. */

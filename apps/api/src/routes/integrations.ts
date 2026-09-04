@@ -3,12 +3,13 @@ import { z } from "zod";
 import { INTEGRATION_PLATFORMS, type IntegrationDTO, type IntegrationPlatform } from "@loom/shared";
 import { badRequest, notFound } from "../lib/errors";
 import { fingerprint, open, seal } from "../lib/secretBox";
-import { requireRole } from "../middleware/auth";
+import { requireAuth, requireRole } from "../middleware/auth";
 import { idParam, validateBody } from "../middleware/validate";
 import { Contact, Integration, Message, WebhookEvent, type IntegrationDoc } from "../models";
 import { createNote, touchActivity } from "../services/activity";
 import { loadContactForUser } from "../services/contacts";
 import { sendPlatformMessage } from "../integrations/send";
+import { authorizeUrl, exchangeCode, isConfigured, readState, redirectUri, saveGrant } from "../integrations/oauth";
 
 export const integrationsRouter = Router();
 
@@ -42,6 +43,22 @@ function toDTO(doc: IntegrationDoc): IntegrationDTO {
 integrationsRouter.get("/", requireRole("admin"), async (_req, res) => {
   const rows = await Integration.find().sort({ platform: 1 });
   res.json({ integrations: rows.map(toDTO) });
+});
+
+/**
+ * Starts the OAuth flow.
+ *
+ * Answers with the URL rather than redirecting, so the browser can open it in a
+ * popup and the admin does not lose the page they were on.
+ */
+integrationsRouter.get("/:platform/authorize", requireRole("admin"), (req, res) => {
+  const platform = platformOf(req);
+  if (!isConfigured(platform)) {
+    throw badRequest(
+      `${platform} has no client credentials configured. Set its app id and secret on the server, then reload.`,
+    );
+  }
+  res.json({ url: authorizeUrl(platform, req.user!.id), redirectUri: redirectUri(platform) });
 });
 
 const connectSchema = z.object({
@@ -146,7 +163,7 @@ integrationsRouter.get("/sync-log", requireRole("admin"), async (req, res) => {
 });
 
 /** The conversation on a contact, ordered oldest first so it reads as a thread. */
-integrationsRouter.get("/messages/:id", async (req, res) => {
+integrationsRouter.get("/messages/:id", requireAuth, async (req, res) => {
   const contact = await loadContactForUser(idParam(req), req.user!);
   const rows = await Message.find({ contact: contact._id }).sort({ sentAt: 1 }).limit(200).populate("sentBy", "name").lean();
   res.json({
@@ -176,7 +193,7 @@ const sendSchema = z.object({
  * also becomes a note, which keeps outbound replies inside the same activity
  * timeline and lead-score signal as everything else.
  */
-integrationsRouter.post("/messages/:id", validateBody(sendSchema), async (req, res) => {
+integrationsRouter.post("/messages/:id", requireAuth, validateBody(sendSchema), async (req, res) => {
   const contact = await loadContactForUser(idParam(req), req.user!);
   const platform = req.body.platform as IntegrationPlatform;
 
@@ -230,7 +247,7 @@ integrationsRouter.post("/messages/:id", validateBody(sendSchema), async (req, r
 });
 
 /** Which contacts have a conversation, for the platform badges on the contact list. */
-integrationsRouter.get("/threads", async (req, res) => {
+integrationsRouter.get("/threads", requireAuth, async (req, res) => {
   const scope = req.user!.role === "admin" ? {} : { owner: req.user!.id };
   const contactIds = await Contact.find(scope).select("_id").lean();
   const rows = await Message.aggregate([
@@ -246,3 +263,54 @@ integrationsRouter.get("/threads", async (req, res) => {
     })),
   });
 });
+
+/**
+ * Where the platform sends the admin back.
+ *
+ * Public by necessity: the platform redirects a browser here with no session
+ * cookie guaranteed. The signed state is what proves the request came from a
+ * flow this server started, and it carries the admin's id so the connection is
+ * attributed correctly.
+ *
+ * It answers HTML rather than JSON because a person is looking at it. The page
+ * tells the opener the result and closes itself.
+ */
+integrationsRouter.get("/:platform/callback", async (req, res) => {
+  const platform = platformOf(req);
+  const code = String(req.query.code ?? req.query.auth_code ?? "");
+  const state = String(req.query.state ?? "");
+  const denied = String(req.query.error ?? req.query.error_description ?? "");
+
+  const finish = (ok: boolean, detail: string) =>
+    res.type("html").send(closingPage(ok, platform, detail));
+
+  if (denied) return finish(false, "You declined the permission request.");
+  if (!code) return finish(false, "The platform did not return an authorisation code.");
+
+  const payload = readState(state);
+  if (!payload || payload.platform !== platform) {
+    // Either not ours, tampered with, or older than ten minutes.
+    return finish(false, "This connection link is no longer valid. Start again from Integrations.");
+  }
+
+  try {
+    const grant = await exchangeCode(platform, code);
+    await saveGrant(platform, grant, payload.userId);
+    return finish(true, grant.externalName ? `Connected ${grant.externalName}.` : "Connected.");
+  } catch (err) {
+    return finish(false, err instanceof Error ? err.message : String(err));
+  }
+});
+
+/** A minimal page for the popup: report, tell the opener, close. */
+function closingPage(ok: boolean, platform: string, detail: string): string {
+  const safe = detail.replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" })[c]!);
+  return `<!doctype html><meta charset="utf-8"><title>${ok ? "Connected" : "Connection failed"}</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;background:#0b0f14;color:#e6edf3}
+.card{max-width:34rem;padding:2rem;text-align:center}h1{font-size:1.1rem;margin:0 0 .5rem}p{margin:0;color:#8b98a5}</style>
+<div class="card"><h1>${ok ? "Connected" : "Could not connect"} ${platform}</h1><p>${safe}</p></div>
+<script>
+  try { window.opener && window.opener.postMessage({ source: "loom-oauth", platform: ${JSON.stringify(platform)}, ok: ${ok} }, "*"); } catch (e) {}
+  setTimeout(function () { window.close(); }, ${ok ? 1200 : 6000});
+</script>`;
+}

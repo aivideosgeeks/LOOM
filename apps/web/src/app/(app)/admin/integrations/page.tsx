@@ -13,7 +13,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { errorMessage } from "@/lib/api";
+import { useQueryClient } from "@tanstack/react-query";
 import {
+  useAuthorizeIntegration,
   useConnectIntegration,
   useDisconnectIntegration,
   useIntegrations,
@@ -164,10 +166,43 @@ function PlatformCard({
 }) {
   const caps = PLATFORM_CAPABILITIES[platform];
   const connect = useConnectIntegration();
+  const authorize = useAuthorizeIntegration();
+  const qc = useQueryClient();
   const disconnect = useDisconnectIntegration();
   const [token, setToken] = useState("");
   const [externalId, setExternalId] = useState("");
   const [open, setOpen] = useState(false);
+
+  /**
+   * Opens the platform's consent screen in a popup.
+   *
+   * A popup rather than a redirect so the admin does not lose this page, and the
+   * callback posts its result back rather than the opener polling for it.
+   */
+  const beginOAuth = async () => {
+    try {
+      const { url } = await authorize.mutateAsync(platform);
+      const popup = window.open(url, `loom-oauth-${platform}`, "width=640,height=760");
+      if (!popup) {
+        toast.error("Your browser blocked the popup. Allow popups for this site and try again.");
+        return;
+      }
+      const onMessage = (e: MessageEvent) => {
+        const data = e.data as { source?: string; platform?: string; ok?: boolean } | null;
+        if (data?.source !== "loom-oauth" || data.platform !== platform) return;
+        window.removeEventListener("message", onMessage);
+        if (data.ok) {
+          toast.success(`${caps.label} connected`);
+          void qc.invalidateQueries({ queryKey: ["integrations"] });
+        } else {
+          toast.error(`${caps.label} was not connected`);
+        }
+      };
+      window.addEventListener("message", onMessage);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  };
 
   const submit = async () => {
     try {
@@ -259,6 +294,19 @@ function PlatformCard({
           <p className="rounded-md border border-bad/40 bg-bad-wash px-3 py-2 text-xs text-bad">{integration.lastError}</p>
         )}
 
+        {!open && (
+          <div className="flex gap-2">
+            <Button size="sm" onClick={() => void beginOAuth()} disabled={authorize.isPending} className="gap-1.5">
+              <Plug className="size-3.5" /> {authorize.isPending ? "Opening…" : integration ? "Reconnect" : `Connect ${caps.label}`}
+            </Button>
+            {integration && (
+              <Button size="sm" variant="ghost" onClick={() => void remove()} disabled={disconnect.isPending} className="gap-1.5 text-ink-3">
+                <Unplug className="size-3.5" /> Disconnect
+              </Button>
+            )}
+          </div>
+        )}
+
         {open ? (
           <div className="space-y-2">
             <div className="space-y-1">
@@ -289,16 +337,9 @@ function PlatformCard({
             </div>
           </div>
         ) : (
-          <div className="flex gap-2">
-            <Button size="sm" variant={integration ? "outline" : "default"} onClick={() => setOpen(true)} className="gap-1.5">
-              <Plug className="size-3.5" /> {integration ? "Reconnect" : "Connect"}
-            </Button>
-            {integration && (
-              <Button size="sm" variant="ghost" onClick={() => void remove()} disabled={disconnect.isPending} className="gap-1.5 text-ink-3">
-                <Unplug className="size-3.5" /> Disconnect
-              </Button>
-            )}
-          </div>
+          <button type="button" onClick={() => setOpen(true)} className="text-left text-xs text-ink-3 underline underline-offset-2">
+            Paste a token instead
+          </button>
         )}
 
         <p className="flex items-start gap-1.5 border-t border-line pt-3 text-xs text-ink-3">

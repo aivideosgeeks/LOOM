@@ -14,6 +14,7 @@ vi.mock("../config/env", async (importOriginal) => {
 import { fingerprint, open, seal, signatureMatches } from "../lib/secretBox";
 import { facebookAdapter, instagramAdapter, tiktokAdapter } from "../integrations/adapters";
 import { guessField } from "../integrations/ingest";
+import { createState, isConfigured, readState } from "../integrations/oauth";
 
 const APP_SECRET = secrets.META_APP_SECRET;
 
@@ -178,5 +179,49 @@ describe("lead field guessing", () => {
   it("returns null for anything else, so the answer is kept as a note rather than guessed", () => {
     expect(guessField("what_are_you_looking_for")).toBeNull();
     expect(guessField("budget_range")).toBeNull();
+  });
+});
+
+describe("oauth state", () => {
+  it("round-trips the platform and the admin who started the flow", () => {
+    const state = createState("facebook", "507f1f77bcf86cd799439011");
+    const payload = readState(state);
+    expect(payload).toMatchObject({ platform: "facebook", userId: "507f1f77bcf86cd799439011" });
+  });
+
+  it("gives every flow a distinct value, so one cannot be replayed as another", () => {
+    expect(createState("facebook", "u1")).not.toBe(createState("facebook", "u1"));
+  });
+
+  it("rejects a state this server did not issue", () => {
+    // The whole point: a crafted callback must not bind the CRM to someone
+    // else's account.
+    expect(readState("not-a-state")).toBeNull();
+    expect(readState(encodeURIComponent("v1.aaa.bbb.ccc"))).toBeNull();
+  });
+
+  it("rejects a tampered state", () => {
+    const state = decodeURIComponent(createState("instagram", "u1"));
+    const parts = state.split(".");
+    const flipped = Buffer.from(parts[3]!, "base64url");
+    flipped[0] ^= 0xff;
+    parts[3] = flipped.toString("base64url");
+    expect(readState(encodeURIComponent(parts.join(".")))).toBeNull();
+  });
+
+  it("expires, so a stale tab cannot complete a connection later", () => {
+    vi.useFakeTimers();
+    try {
+      const state = createState("tiktok", "u1");
+      vi.advanceTimersByTime(11 * 60_000);
+      expect(readState(state)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("knows which platforms have credentials configured", () => {
+    // The mock supplies Meta's secret but no app id, so it is not connectable.
+    expect(isConfigured("facebook")).toBe(false);
   });
 });

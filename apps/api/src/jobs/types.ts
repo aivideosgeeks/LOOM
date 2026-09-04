@@ -12,6 +12,8 @@ export interface JobPayloads {
   "integration.poll": Record<string, never>;
   /** Reprocesses platform events that failed, since the webhook route must answer 200 regardless. */
   "integration.retry": Record<string, never>;
+  /** Extends tokens before they lapse; a silent expiry looks like a connection that never existed. */
+  "integration.refresh": Record<string, never>;
 }
 
 export type JobName = keyof JobPayloads;

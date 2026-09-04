@@ -4,6 +4,7 @@ import { jobs } from "../jobs/queue";
 import { logger } from "../lib/logger";
 import { Contact, Deal, LeadFormMapping, Message, User, WebhookEvent, type ContactDoc } from "../models";
 import { createNote, touchActivity } from "../services/activity";
+import { notify } from "../services/notifications";
 
 /**
  * The one path everything ingested takes, whatever platform it came from and
@@ -183,6 +184,17 @@ export async function ingestMessage(input: InboundMessage): Promise<IngestOutcom
   });
 
   await touchActivity(String(deal._id), String(contact._id), sentAt);
+
+  await notify({
+    userId: String(contact.owner),
+    kind: "message_received",
+    title: `${label} message from ${contact.name}`,
+    body: input.text.length > 140 ? `${input.text.slice(0, 140)}…` : input.text,
+    href: `/contacts/${String(contact._id)}`,
+    // One notification per conversation per week, not one per message.
+    dedupeKey: `message:${String(contact._id)}`,
+  });
+
   return { contactId: String(contact._id), dealId: String(deal._id), created };
 }
 
@@ -243,6 +255,18 @@ export async function ingestLead(input: InboundLead): Promise<IngestOutcome> {
   });
 
   await touchActivity(String(deal._id), String(contact._id), input.createdAt ?? new Date());
+
+  // Every lead notifies: a new one is worth acting on even if the last arrived
+  // an hour ago, which is not true of an ongoing conversation.
+  await notify({
+    userId: String(contact.owner),
+    kind: "lead_received",
+    title: `New ${label} lead: ${contact.name}`,
+    body: input.formName ? `From "${input.formName}"` : "",
+    href: `/deals/${String(deal._id)}`,
+    email: true,
+  });
+
   return { contactId: String(contact._id), dealId: String(deal._id), created };
 }
 

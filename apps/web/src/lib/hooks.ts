@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from "@ta
 import type {
   AssistantReply,
   IntegrationDTO,
+  NotificationDTO,
   IntegrationPlatform,
   PlatformMessageDTO,
   SyncLogEntryDTO,
@@ -107,6 +108,7 @@ export const keys = {
   integrations: ["integrations"] as const,
   syncLog: (platform: string) => ["sync-log", platform] as const,
   messages: (contactId: string) => ["messages", contactId] as const,
+  notifications: ["notifications"] as const,
 };
 
 export function useMe(options: Partial<UseQueryOptions<{ user: UserDTO }>> = {}) {
@@ -552,5 +554,41 @@ export function useSendMessage(contactId: string) {
       // An outbound reply becomes a note, so the timeline is stale too.
       void qc.invalidateQueries({ queryKey: keys.contact(contactId) });
     },
+  });
+}
+
+/* --------------------------------------------------------------- notifications */
+
+export function useNotifications() {
+  return useQuery({
+    queryKey: keys.notifications,
+    queryFn: () => api<{ items: NotificationDTO[]; unread: number }>("/api/notifications?limit=30"),
+    // Notifications are produced by background jobs, so nothing else on the page
+    // would ever tell the client one arrived.
+    refetchInterval: 45_000,
+  });
+}
+
+export function useMarkNotificationRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<{ ok: true }>(`/api/notifications/${id}/read`, { method: "POST" }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.notifications }),
+  });
+}
+
+export function useMarkAllNotificationsRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api<{ ok: true }>("/api/notifications/read-all", { method: "POST" }),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: keys.notifications }),
+  });
+}
+
+/** Asks the server for the platform's consent URL, opened in a popup by the caller. */
+export function useAuthorizeIntegration() {
+  return useMutation({
+    mutationFn: (platform: IntegrationPlatform) =>
+      api<{ url: string; redirectUri: string }>(`/api/integrations/${platform}/authorize`),
   });
 }

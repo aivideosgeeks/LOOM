@@ -13,6 +13,7 @@ export async function startJobs() {
   // frequently does not and a fallback nobody exercises is not a fallback.
   await queue.schedule("integration-poll", "integration.poll", {}, env.INTEGRATION_POLL_CRON);
   await queue.schedule("integration-retry", "integration.retry", {}, "*/30 * * * *");
+  await queue.schedule("integration-refresh", "integration.refresh", {}, "0 4 * * *");
   // Skipped on the inline adapter: there it would run two whole-collection
   // scans inside the first request of every cold start. Platform cron calls
   // /api/cron/daily instead.

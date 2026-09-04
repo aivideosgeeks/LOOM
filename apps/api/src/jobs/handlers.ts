@@ -67,6 +67,9 @@ export async function handleJob(job: JobEnvelope): Promise<void> {
     case "integration.retry":
       await (await import("../integrations/poll")).retryFailedEvents();
       return;
+    case "integration.refresh":
+      await (await import("../integrations/oauth")).refreshExpiringTokens();
+      return;
     case "risk.scan":
       await scanAllDealsForRisk();
       return;

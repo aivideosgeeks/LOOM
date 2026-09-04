@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Plug, BarChart3, Bot, CircleDot, Contact, Copy, Handshake, LayoutDashboard, ListTodo, LogOut, MessageSquareText, Search, Sparkles, Users } from "lucide-react";
 import { AssistantFab } from "@/components/assistant-fab";
+import { NotificationBell } from "@/components/notification-bell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -139,6 +140,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </nav>
           <div className="ml-auto flex items-center gap-3">
             <AiStatusPill />
+            {me && <NotificationBell />}
             {me && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
