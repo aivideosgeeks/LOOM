@@ -61,8 +61,23 @@ function configFor(platform: IntegrationPlatform): OAuthConfig {
 }
 
 export function isConfigured(platform: IntegrationPlatform): boolean {
+  return missingCredentials(platform).length === 0;
+}
+
+/**
+ * Which environment variables this platform is still waiting on.
+ *
+ * Named rather than counted, because "not configured" sends someone hunting
+ * through a dashboard while "META_APP_ID is missing" does not. This is the
+ * difference between a five-second fix and an afternoon.
+ */
+export function missingCredentials(platform: IntegrationPlatform): string[] {
   const c = configFor(platform);
-  return Boolean(c.clientId && c.clientSecret);
+  const prefix = platform === "tiktok" ? "TIKTOK" : "META";
+  const missing: string[] = [];
+  if (!c.clientId) missing.push(`${prefix}_APP_ID`);
+  if (!c.clientSecret) missing.push(`${prefix}_APP_SECRET`);
+  return missing;
 }
 
 /** Where the platform sends the admin back. Must match the app's registered redirect exactly. */

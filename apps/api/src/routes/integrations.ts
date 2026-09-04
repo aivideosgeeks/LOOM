@@ -9,7 +9,7 @@ import { Contact, Integration, Message, WebhookEvent, type IntegrationDoc } from
 import { createNote, touchActivity } from "../services/activity";
 import { loadContactForUser } from "../services/contacts";
 import { sendPlatformMessage } from "../integrations/send";
-import { authorizeUrl, exchangeCode, isConfigured, readState, redirectUri, saveGrant } from "../integrations/oauth";
+import { authorizeUrl, exchangeCode, isConfigured, missingCredentials, readState, redirectUri, saveGrant } from "../integrations/oauth";
 
 export const integrationsRouter = Router();
 
@@ -42,7 +42,18 @@ function toDTO(doc: IntegrationDoc): IntegrationDTO {
  */
 integrationsRouter.get("/", requireRole("admin"), async (_req, res) => {
   const rows = await Integration.find().sort({ platform: 1 });
-  res.json({ integrations: rows.map(toDTO) });
+  res.json({
+    integrations: rows.map(toDTO),
+    // Which platforms the server can actually start a flow for, and what each
+    // one is still missing. Reported here so the card can explain itself rather
+    // than failing when the button is pressed.
+    credentials: INTEGRATION_PLATFORMS.map((platform) => ({
+      platform,
+      configured: isConfigured(platform),
+      missing: missingCredentials(platform),
+      redirectUri: redirectUri(platform),
+    })),
+  });
 });
 
 /**
@@ -53,9 +64,10 @@ integrationsRouter.get("/", requireRole("admin"), async (_req, res) => {
  */
 integrationsRouter.get("/:platform/authorize", requireRole("admin"), (req, res) => {
   const platform = platformOf(req);
-  if (!isConfigured(platform)) {
+  const missing = missingCredentials(platform);
+  if (missing.length > 0) {
     throw badRequest(
-      `${platform} has no client credentials configured. Set its app id and secret on the server, then reload.`,
+      `${platform} is missing ${missing.join(" and ")} on the API server. Set ${missing.length > 1 ? "them" : "it"} for Production and redeploy.`,
     );
   }
   res.json({ url: authorizeUrl(platform, req.user!.id), redirectUri: redirectUri(platform) });

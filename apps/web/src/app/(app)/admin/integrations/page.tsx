@@ -21,6 +21,7 @@ import {
   useIntegrations,
   useMe,
   useSyncLog,
+  type PlatformCredentialState,
 } from "@/lib/hooks";
 import { timeAgo } from "@/lib/format";
 
@@ -62,6 +63,7 @@ export default function IntegrationsPage() {
             key={platform}
             platform={platform}
             integration={byPlatform.get(platform)}
+            credentials={(data?.credentials ?? []).find((c) => c.platform === platform)}
             summary={summary.find((s) => s.platform === platform)}
             loading={isLoading}
           />
@@ -156,11 +158,13 @@ function StatusBadge({ status, error, attempts }: { status: string; error: strin
 function PlatformCard({
   platform,
   integration,
+  credentials,
   summary,
   loading,
 }: {
   platform: IntegrationPlatform;
   integration?: IntegrationDTO;
+  credentials?: PlatformCredentialState;
   summary?: { processed: number; failed: number; viaWebhook: number; viaPolling: number };
   loading: boolean;
 }) {
@@ -294,9 +298,23 @@ function PlatformCard({
           <p className="rounded-md border border-bad/40 bg-bad-wash px-3 py-2 text-xs text-bad">{integration.lastError}</p>
         )}
 
+        {credentials && !credentials.configured && (
+          <div className="space-y-1.5 rounded-md border border-line bg-background px-3 py-2.5">
+            <p className="text-xs font-medium">Not configured on the server</p>
+            <p className="text-xs text-ink-3">
+              Set {credentials.missing.join(" and ")} on the API for Production, then redeploy it.
+            </p>
+          </div>
+        )}
+
         {!open && (
           <div className="flex gap-2">
-            <Button size="sm" onClick={() => void beginOAuth()} disabled={authorize.isPending} className="gap-1.5">
+            <Button
+              size="sm"
+              onClick={() => void beginOAuth()}
+              disabled={authorize.isPending || credentials?.configured === false}
+              className="gap-1.5"
+            >
               <Plug className="size-3.5" /> {authorize.isPending ? "Opening…" : integration ? "Reconnect" : `Connect ${caps.label}`}
             </Button>
             {integration && (

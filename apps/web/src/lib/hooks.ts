@@ -495,10 +495,19 @@ export function useClearAssistantHistory() {
 
 /* ---------------------------------------------------------------- integrations */
 
+/** Whether the server can start a flow for a platform, and what it still needs. */
+export interface PlatformCredentialState {
+  platform: IntegrationPlatform;
+  configured: boolean;
+  missing: string[];
+  redirectUri: string;
+}
+
 export function useIntegrations(enabled = true) {
   return useQuery({
     queryKey: keys.integrations,
-    queryFn: () => api<{ integrations: IntegrationDTO[] }>("/api/integrations"),
+    queryFn: () =>
+      api<{ integrations: IntegrationDTO[]; credentials: PlatformCredentialState[] }>("/api/integrations"),
     enabled,
     staleTime: 30_000,
   });

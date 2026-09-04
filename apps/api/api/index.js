@@ -4950,6 +4950,7 @@ __export(oauth_exports, {
   createState: () => createState,
   exchangeCode: () => exchangeCode,
   isConfigured: () => isConfigured,
+  missingCredentials: () => missingCredentials,
   readState: () => readState,
   redirectUri: () => redirectUri,
   refreshExpiringTokens: () => refreshExpiringTokens,
@@ -4986,8 +4987,15 @@ function configFor(platform) {
   }
 }
 function isConfigured(platform) {
+  return missingCredentials(platform).length === 0;
+}
+function missingCredentials(platform) {
   const c = configFor(platform);
-  return Boolean(c.clientId && c.clientSecret);
+  const prefix = platform === "tiktok" ? "TIKTOK" : "META";
+  const missing = [];
+  if (!c.clientId) missing.push(`${prefix}_APP_ID`);
+  if (!c.clientSecret) missing.push(`${prefix}_APP_SECRET`);
+  return missing;
 }
 function redirectUri(platform) {
   const base = env.PUBLIC_API_URL || env.WEB_ORIGIN;
@@ -7246,13 +7254,25 @@ var init_integrations = __esm({
     integrationsRouter = Router5();
     integrationsRouter.get("/", requireRole("admin"), async (_req, res) => {
       const rows = await Integration.find().sort({ platform: 1 });
-      res.json({ integrations: rows.map(toDTO) });
+      res.json({
+        integrations: rows.map(toDTO),
+        // Which platforms the server can actually start a flow for, and what each
+        // one is still missing. Reported here so the card can explain itself rather
+        // than failing when the button is pressed.
+        credentials: INTEGRATION_PLATFORMS.map((platform) => ({
+          platform,
+          configured: isConfigured(platform),
+          missing: missingCredentials(platform),
+          redirectUri: redirectUri(platform)
+        }))
+      });
     });
     integrationsRouter.get("/:platform/authorize", requireRole("admin"), (req, res) => {
       const platform = platformOf(req);
-      if (!isConfigured(platform)) {
+      const missing = missingCredentials(platform);
+      if (missing.length > 0) {
         throw badRequest(
-          `${platform} has no client credentials configured. Set its app id and secret on the server, then reload.`
+          `${platform} is missing ${missing.join(" and ")} on the API server. Set ${missing.length > 1 ? "them" : "it"} for Production and redeploy.`
         );
       }
       res.json({ url: authorizeUrl(platform, req.user.id), redirectUri: redirectUri(platform) });
